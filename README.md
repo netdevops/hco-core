@@ -32,12 +32,14 @@ no base class and takes no runtime dependency on this package:
 ```python
 from hco_core import RemediationPlanner
 
+
 class MyAnalyser:
     async def propose(self, request): ...
     async def assess(self, change, evidence, *, binding, prompt_version): ...
     async def explain(self, change, *, binding, prompt_version): ...
 
-assert isinstance(MyAnalyser(), RemediationPlanner)   # structural typing
+
+assert isinstance(MyAnalyser(), RemediationPlanner)  # structural typing
 ```
 
 ## The AI contract
