@@ -1,0 +1,11 @@
+hco-core
+Copyright 2026 The hco-core authors
+
+Licensed under the Apache License, Version 2.0. See LICENSE.
+
+This product depends on software developed by third parties:
+
+  hier-config     MIT         https://github.com/netdevops/hier_config
+  pydantic        MIT         https://github.com/pydantic/pydantic
+
+Both are permissive and impose no obligation beyond attribution.

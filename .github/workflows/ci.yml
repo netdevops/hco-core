@@ -1,0 +1,40 @@
+---
+name: ci
+
+on:
+  push:
+    branches: [develop, next]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.14 runs but is not required: scrapli, which downstream consumers
+        # need, does not yet declare it. Promote when it does.
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pipx install poetry
+      - run: poetry install --no-interaction
+      - run: poetry run ruff format --check .
+      - run: poetry run ruff check --output-format=concise .
+      - run: poetry run mypy hco_core
+      - run: poetry run pytest -q --cov=hco_core --cov-report=term-missing
+
+  test-314:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - run: pipx install poetry
+      - run: poetry install --no-interaction
+      - run: poetry run pytest -q

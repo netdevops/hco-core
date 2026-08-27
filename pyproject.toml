@@ -1,0 +1,66 @@
+[tool.poetry]
+name = "hco-core"
+version = "0.1.0a0"
+description = "Ports and domain models for building network configuration orchestration on hier_config"
+authors = ["James Williams <jtdub@example.com>"]
+license = "Apache-2.0"
+readme = "README.md"
+homepage = "https://github.com/netdevops/hco-core"
+repository = "https://github.com/netdevops/hco-core"
+keywords = ["network", "automation", "configuration", "hier-config", "orchestration"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Networking",
+    "Typing :: Typed",
+]
+packages = [{ include = "hco_core", from = "." }]
+
+[tool.poetry.dependencies]
+python = ">=3.12,<3.15"
+pydantic = "^2.9"
+hier-config = ">=4.0.0b1,<5.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "*"
+pytest-cov = "*"
+mypy = "*"
+ruff = "*"
+
+[build-system]
+requires = ["poetry-core>=2.3.2"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.mypy]
+strict = true
+warn_unreachable = true
+plugins = ["pydantic.mypy"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["ALL"]
+preview = true
+ignore = [
+    "missing-trailing-comma",           # formatter's job
+    "missing-copyright-notice",         # LICENSE + NOTICE cover it
+    "incorrect-blank-line-before-class",
+    "multi-line-summary-second-line",
+    "line-too-long",                    # formatter's job
+    "single-line-implicit-string-concatenation",
+    "undocumented-public-init",
+    "undocumented-public-package",
+    "docstring-missing-returns",        # types carry it; prose would restate
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = [
+    "assert",                           # pytest is built on assert
+    "import-private-name",
+    "undocumented-public-module",
+]
