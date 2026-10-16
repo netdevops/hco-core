@@ -69,3 +69,6 @@ ignore = [
     "import-private-name",
     "undocumented-public-module",
 ]
+
+[tool.coverage.report]
+fail_under = 95

@@ -25,8 +25,15 @@ def pyproject() -> dict[str, Any]:
 
 
 def test_lock_file_is_committed() -> None:
+    """A committed lock makes `poetry install` reproducible."""
     assert (ROOT / "poetry.lock").is_file()
 
 
 def test_pyright_runs_in_strict_mode() -> None:
+    """Pyright strict finds `Protocol` errors that mypy misses."""
     assert pyproject()["tool"]["pyright"]["typeCheckingMode"] == "strict"
+
+
+def test_coverage_floor_is_95_percent() -> None:
+    """A run with `--cov` fails below the floor."""
+    assert pyproject()["tool"]["coverage"]["report"]["fail_under"] == 95  # ruff: ignore[magic-value-comparison]
