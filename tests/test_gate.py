@@ -37,3 +37,11 @@ def test_pyright_runs_in_strict_mode() -> None:
 def test_coverage_floor_is_95_percent() -> None:
     """A run with `--cov` fails below the floor."""
     assert pyproject()["tool"]["coverage"]["report"]["fail_under"] == 95  # ruff: ignore[magic-value-comparison]
+
+
+def test_towncrier_reads_fragments_of_the_seven_shared_types() -> None:
+    """Fragments do not conflict on rebase the way one changelog file does."""
+    towncrier = pyproject()["tool"]["towncrier"]
+    assert towncrier["directory"] == "changes"
+    assert {kind["directory"] for kind in towncrier["type"]} == CHANGE_TYPES
+    assert (ROOT / towncrier["template"]).is_file()

@@ -30,6 +30,7 @@ pytest-cov = "*"
 mypy = "*"
 pyright = "*"
 ruff = "*"
+towncrier = "*"
 
 [build-system]
 requires = ["poetry-core>=2.3.2"]
@@ -72,3 +73,49 @@ ignore = [
 
 [tool.coverage.report]
 fail_under = 95
+
+[tool.towncrier]
+directory = "changes"
+filename = "CHANGELOG.md"
+package = "hco_core"
+start_string = "<!-- towncrier release notes start -->\n"
+title_format = "## [{version}] - {project_date}"
+issue_format = "[#{issue}](https://github.com/netdevops/hco-core/issues/{issue})"
+underlines = ["", "", ""]
+ignore = ["README.md"]
+template = "changes/_template.md"
+
+[[tool.towncrier.type]]
+directory = "added"
+name = "Added"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "changed"
+name = "Changed"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "fixed"
+name = "Fixed"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "removed"
+name = "Removed"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "security"
+name = "Security"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "dependencies"
+name = "Dependencies"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "documentation"
+name = "Documentation"
+showcontent = true
