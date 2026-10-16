@@ -26,3 +26,7 @@ def pyproject() -> dict[str, Any]:
 
 def test_lock_file_is_committed() -> None:
     assert (ROOT / "poetry.lock").is_file()
+
+
+def test_pyright_runs_in_strict_mode() -> None:
+    assert pyproject()["tool"]["pyright"]["typeCheckingMode"] == "strict"
