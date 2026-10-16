@@ -21,11 +21,15 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pipx install poetry
+      - run: poetry check --lock
       - run: poetry install --no-interaction
+      - name: Render the changelog fragments
+        run: poetry run towncrier build --draft --version 0.0.0
       - run: poetry run ruff format --check .
       - run: poetry run ruff check --output-format=concise .
       - run: poetry run mypy hco_core
-      - run: poetry run pytest -q --cov=hco_core --cov-report=term-missing
+      - run: poetry run pyright
+      - run: poetry run pytest -q --cov=hco_core --cov-report=term-missing --cov-fail-under=95
 
   # Advisory only. Reports green even when the required jobs above fail, so
   # read it alongside them rather than on its own. Promote to the matrix when
@@ -39,10 +43,14 @@ jobs:
         with:
           python-version: "3.14"
       - run: pipx install poetry
+      - run: poetry check --lock
       - run: poetry install --no-interaction
       # The same checks as the required jobs, so an advisory pass means the
       # same thing they do.
+      - name: Render the changelog fragments
+        run: poetry run towncrier build --draft --version 0.0.0
       - run: poetry run ruff format --check .
       - run: poetry run ruff check --output-format=concise .
       - run: poetry run mypy hco_core
-      - run: poetry run pytest -q
+      - run: poetry run pyright
+      - run: poetry run pytest -q --cov=hco_core --cov-report=term-missing --cov-fail-under=95
