@@ -108,7 +108,12 @@ user interface; a credential must not be in any of those.
 
 ## Requirements
 
-Python 3.12 to 3.14. Depends on `pydantic` and `hier-config` and nothing else.
+Python 3.12 to 3.14.
+
+This release depends on `pydantic` and `hier-config` only. Phase 1 adds the
+remediation engine, the database, the review graph, the REST API, and the CLI.
+These parts add runtime dependencies, so the list grows in each Phase 1 release.
+Read `pyproject.toml` for the current list.
 
 ## Licence
 
