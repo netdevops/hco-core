@@ -18,7 +18,11 @@ class CoreSettings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_prefix="HCO_", env_file=".env", extra="ignore", hide_input_in_errors=True
+        env_prefix="HCO_",
+        env_file=".env",
+        env_ignore_empty=True,
+        extra="ignore",
+        hide_input_in_errors=True,
     )
 
     database_url: SecretStr = SecretStr(f"{PSYCOPG_SCHEME}hco:hco@localhost:5432/hco")

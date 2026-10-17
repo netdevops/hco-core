@@ -15,6 +15,22 @@ jobs:
         # 3.14 runs but is not required: scrapli, which downstream consumers
         # need, does not yet declare it. Promote when it does.
         python-version: ["3.12", "3.13"]
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: hco
+          POSTGRES_PASSWORD: hco
+          POSTGRES_DB: hco
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hco -d hco"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      HCO_DATABASE_URL: postgresql://hco:hco@localhost:5432/hco
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -39,6 +55,22 @@ jobs:
   smoke-3-14-advisory:
     runs-on: ubuntu-latest
     continue-on-error: true
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: hco
+          POSTGRES_PASSWORD: hco
+          POSTGRES_DB: hco
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hco -d hco"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      HCO_DATABASE_URL: postgresql://hco:hco@localhost:5432/hco
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

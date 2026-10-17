@@ -3,9 +3,32 @@ Copyright 2026 The hco-core authors
 
 Licensed under the Apache License, Version 2.0. See LICENSE.
 
-This product depends on software developed by third parties:
+This product depends on software developed by third parties.
 
-  hier-config     MIT         https://github.com/netdevops/hier_config
-  pydantic        MIT         https://github.com/pydantic/pydantic
+Permissive (MIT, Apache-2.0, BSD-3-Clause, PSF-2.0)
 
-Both are permissive and impose no obligation beyond attribution.
+  hier-config        MIT                  https://github.com/netdevops/hier_config
+  pydantic           MIT                  https://github.com/pydantic/pydantic
+  pydantic-settings  MIT                  https://github.com/pydantic/pydantic-settings
+  pyyaml             MIT                  https://github.com/yaml/pyyaml
+  sqlalchemy         MIT                  https://github.com/sqlalchemy/sqlalchemy
+  alembic            MIT                  https://github.com/sqlalchemy/alembic
+  structlog          MIT OR Apache-2.0    https://github.com/hynek/structlog
+  python-ulid        MIT                  https://github.com/mdomke/python-ulid
+
+These impose no obligation beyond attribution.
+
+Weak copyleft
+
+  psycopg, psycopg-binary, psycopg-pool    LGPL-3.0-only
+      https://github.com/psycopg/psycopg
+
+  hco-core uses psycopg unmodified, as the Postgres driver of SQLAlchemy.
+  Only the hco_core.db package loads it. You can replace it with a different
+  build of psycopg 3 without a change to hco-core. The psycopg-binary wheel
+  also contains libpq (PostgreSQL License) and OpenSSL (Apache-2.0).
+
+  Written offer of source: the complete source of each LGPL component above is
+  at the upstream URL. On request, the hco-core authors also supply the source
+  of the exact version that a hco-core release uses. Open an issue at
+  https://github.com/netdevops/hco-core/issues to ask for it.
