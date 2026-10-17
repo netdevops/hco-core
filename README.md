@@ -155,6 +155,7 @@ device = DeviceRecord(
 
 facts = config_derived(bundle, running, device)
 assert facts.interfaces_touched == ("Gi0/0",)
+assert facts.mgmt_interface == "Gi0/0"
 assert facts.touches_mgmt_path
 
 profile = PLATFORMS["CISCO_IOS"]
@@ -162,15 +163,23 @@ assert profile.strategy == "ios_archive_replace"
 assert "show interfaces status" in profile.commands_for(facts.top_level_sections)
 ```
 
-- `touches_mgmt_path` is true when the change touches the interface that holds
-  the management address, when the default gateway of the view changes, or
-  when a line starts with one of the `default_route_prefixes` of the platform.
+- `mgmt_interface` is the running interface that holds the management
+  address. `mgmt_vrf` is its VRF. It is `None` for the global table, or when
+  no interface holds the address.
+- `default_routes_touched` lists each IPv4 default route that the change adds
+  or removes, with its VRF. The global and the VRF forms are found on all four
+  platforms, for example `ip route vrf MGMT 0.0.0.0/0` on `ARISTA_EOS`.
+- `touches_mgmt_path` is true when the change touches `mgmt_interface`, or a
+  default route in `mgmt_vrf`. Without `mgmt_interface`, any default route
+  counts. A change of the default gateway of the view counts only when
+  `mgmt_vrf` is `None`.
 - The management address must be an IPv4 address. A host name or an IPv6
   address matches no interface.
-- On `CISCO_IOS`, the `hier_config` view reads `ip default-gateway` only. The
-  default route prefixes find `ip route 0.0.0.0 0.0.0.0`.
-- The prefixes do not find a default route in a VRF on `CISCO_IOS` or
-  `ARISTA_EOS`, such as `ip route vrf MGMT 0.0.0.0/0`.
+- On `CISCO_IOS`, the `hier_config` view reads `ip default-gateway` only, and
+  it gives no VRF for `vrf forwarding MGMT`. HCO reads the route lines and the
+  `vrf` child line of the interface instead.
+- These are not found: an IPv6 default route, a default route that a routing
+  protocol supplies, and a route that leaks from one VRF to another.
 - A platform outside `PLATFORMS` has no default route prefixes.
 - `config_derived()` needs a `hier_config` view. Only `ARISTA_EOS`,
   `ARUBA_AOSCX`, `CISCO_IOS`, `CISCO_NXOS`, `CISCO_XR`, and `HP_PROCURVE` have

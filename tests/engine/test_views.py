@@ -10,7 +10,7 @@ from hier_config.registry import register_driver, unregister_driver
 
 from hco_core.domain.device import DeviceRecord
 from hco_core.domain.ids import DeviceID
-from hco_core.domain.remediation import ConfigDerived
+from hco_core.domain.remediation import ConfigDerived, DefaultRouteFact
 from hco_core.engine.errors import InvalidConfigError, UnknownPlatformError
 from hco_core.engine.remediation import build_bundle, parse
 from hco_core.engine.views import config_derived
@@ -267,20 +267,120 @@ def test_an_unchanged_default_gateway_does_not_touch_the_mgmt_path() -> None:
     assert not derive(IOS, running, f"{running}ip routing\n").touches_mgmt_path
 
 
-@pytest.mark.parametrize(
-    ("platform_name", "route"),
-    [
-        (IOS, "ip route vrf MGMT 0.0.0.0 0.0.0.0 192.0.2.1\n"),
-        ("ARISTA_EOS", "ip route vrf MGMT 0.0.0.0/0 192.0.2.1\n"),
-        (UNUSED_ACL_PLATFORM, "ip route 0.0.0.0 0.0.0.0 192.0.2.1\n"),
-    ],
-)
 @pytest.mark.usefixtures("unused_acl_platform")
-def test_known_limits_of_the_default_route_check(
-    platform_name: str, route: str
+def test_a_platform_outside_the_table_finds_no_default_route() -> None:
+    """A platform outside the table has no default route prefixes."""
+    route = "ip route 0.0.0.0 0.0.0.0 192.0.2.1\n"
+    facts = derive(UNUSED_ACL_PLATFORM, "", route)
+    assert facts.default_routes_touched == ()
+    assert not facts.touches_mgmt_path
+
+
+MGMT = {
+    IOS: (
+        "Gi0/0",
+        "interface Gi0/0\n vrf forwarding {vrf}\n ip address 10.0.0.1 255.255.255.0\n",
+    ),
+    "CISCO_NXOS": (
+        "mgmt0",
+        "interface mgmt0\n  vrf member {vrf}\n  ip address 10.0.0.1/24\n",
+    ),
+    "ARISTA_EOS": (
+        "Management1",
+        "interface Management1\n   vrf {vrf}\n   ip address 10.0.0.1/24\n",
+    ),
+    "CISCO_XR": (
+        "MgmtEth0",
+        "interface MgmtEth0\n vrf {vrf}\n ipv4 address 10.0.0.1 255.255.255.0\n",
+    ),
+}
+ROUTES = {
+    IOS: (
+        "ip route 0.0.0.0 0.0.0.0 10.0.0.254\n",
+        "ip route vrf {vrf} 0.0.0.0 0.0.0.0 10.0.0.254\n",
+    ),
+    "CISCO_NXOS": (
+        "ip route 0.0.0.0/0 10.0.0.254\n",
+        "vrf context {vrf}\n  ip route 0.0.0.0/0 10.0.0.254\n",
+    ),
+    "ARISTA_EOS": (
+        "ip route 0.0.0.0/0 10.0.0.254\n",
+        "ip route vrf {vrf} 0.0.0.0/0 10.0.0.254\n",
+    ),
+    "CISCO_XR": (
+        "router static\n address-family ipv4 unicast\n  0.0.0.0/0 10.0.0.254\n",
+        "router static\n vrf {vrf}\n  address-family ipv4 unicast\n   0.0.0.0/0 10.0.0.254\n",
+    ),
+}
+
+
+@pytest.mark.parametrize("platform_name", sorted(MGMT))
+@pytest.mark.parametrize(
+    ("route_vrf", "touches"), [("MGMT", True), ("CUST", False), (None, False)]
+)
+def test_a_default_route_touches_the_mgmt_path_only_in_the_mgmt_vrf(
+    platform_name: str, route_vrf: str | None, *, touches: bool
 ) -> None:
-    """A VRF default route, or a platform outside the table, is not found."""
-    assert not derive(platform_name, "", route).touches_mgmt_path
+    """A default route in another VRF, or in the global table, is not the path."""
+    interface, template = MGMT[platform_name]
+    mgmt = template.format(vrf="MGMT")
+    global_route, vrf_route = ROUTES[platform_name]
+    route = vrf_route.format(vrf=route_vrf) if route_vrf else global_route
+    for running, intended, negated in (
+        (mgmt, mgmt + route, False),
+        (mgmt + route, mgmt, True),
+    ):
+        facts = derive(platform_name, running, intended)
+        assert (facts.mgmt_interface, facts.mgmt_vrf) == (interface, "MGMT")
+        assert facts.default_routes_touched == (
+            DefaultRouteFact(vrf=route_vrf, negated=negated),
+        )
+        assert facts.touches_mgmt_path is touches
+
+
+@pytest.mark.parametrize(("route_vrf", "touches"), [("CUST", False), (None, True)])
+def test_a_global_mgmt_interface_matches_global_default_routes(
+    route_vrf: str | None, *, touches: bool
+) -> None:
+    """A management interface in the global table has no VRF."""
+    global_route, vrf_route = ROUTES[IOS]
+    route = vrf_route.format(vrf=route_vrf) if route_vrf else global_route
+    facts = derive(IOS, GATEWAY, GATEWAY + route)
+    assert (facts.mgmt_interface, facts.mgmt_vrf) == ("Vlan1", None)
+    assert facts.touches_mgmt_path is touches
+
+
+@pytest.mark.parametrize("platform_name", sorted(ROUTES))
+def test_any_default_route_touches_the_path_without_a_mgmt_interface(
+    platform_name: str,
+) -> None:
+    """An unknown management VRF counts every default route."""
+    route = ROUTES[platform_name][1].format(vrf="CUST")
+    facts = derive(platform_name, "", route)
+    assert (facts.mgmt_interface, facts.mgmt_vrf) == (None, None)
+    assert facts.default_routes_touched == (
+        DefaultRouteFact(vrf="CUST", negated=False),
+    )
+    assert facts.touches_mgmt_path
+
+
+def test_a_replaced_default_route_is_two_facts() -> None:
+    """A changed next hop removes one default route and adds another."""
+    mgmt = MGMT[IOS][1].format(vrf="MGMT")
+    route = ROUTES[IOS][1].format(vrf="MGMT")
+    facts = derive(IOS, mgmt + route, mgmt + route.replace(".254", ".253"))
+    assert facts.default_routes_touched == (
+        DefaultRouteFact(vrf="MGMT", negated=False),
+        DefaultRouteFact(vrf="MGMT", negated=True),
+    )
+
+
+def test_the_view_vrf_is_used_before_the_child_line() -> None:
+    """The fallback reads the child line only when the view has no VRF."""
+    running = (
+        "interface Gi0/0\n ip vrf forwarding OLD\n ip address 10.0.0.1 255.255.255.0\n"
+    )
+    assert derive(IOS, running, running).mgmt_vrf == "OLD"
 
 
 def test_a_deep_default_route_is_found() -> None:
@@ -322,3 +422,11 @@ def test_a_platform_without_a_view_raises(platform_name: str) -> None:
     )
     with pytest.raises(UnknownPlatformError, match="No view registered"):
         config_derived(bundle, running_dump, device)
+
+
+def test_a_default_gateway_change_outside_the_mgmt_vrf_is_not_the_path() -> None:
+    """The view's default gateway is in the global table, not in the mgmt VRF."""
+    mgmt = MGMT[IOS][1].format(vrf="MGMT")
+    facts = derive(IOS, mgmt, f"{mgmt}ip default-gateway 10.0.0.254\n")
+    assert facts.mgmt_vrf == "MGMT"
+    assert not facts.touches_mgmt_path

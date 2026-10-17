@@ -48,11 +48,19 @@ class RemediationBundle(BaseModel):
     future_report: FutureReportData
 
 
+class DefaultRouteFact(BaseModel):
+    """An IPv4 default route that a remediation adds or removes."""
+
+    vrf: str | None
+    """The VRF of the route, or None for the global table."""
+    negated: bool
+    """True if the remediation removes the route."""
+
+
 class ConfigDerived(BaseModel):
     """Facts about what a remediation touches, with no judgement of risk.
 
-    Names and texts are sorted. `touches_mgmt_path` is true when the change
-    touches the interface that holds the management address, or a default route.
+    Names, texts, and default routes are sorted.
     """
 
     interfaces_touched: tuple[str, ...]
@@ -68,4 +76,12 @@ class ConfigDerived(BaseModel):
     command_count: int
     remediation_tags: tuple[str, ...]
     top_level_sections: tuple[str, ...]
+    mgmt_interface: str | None
+    """The running interface that holds the management address, or None."""
+    mgmt_vrf: str | None
+    """The VRF of `mgmt_interface`, or None for the global table or no interface."""
+    default_routes_touched: tuple[DefaultRouteFact, ...]
     touches_mgmt_path: bool
+    """True if the change touches `mgmt_interface`, the default gateway, or a
+    default route in `mgmt_vrf`. Without `mgmt_interface`, any default route counts.
+    """
