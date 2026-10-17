@@ -218,6 +218,9 @@ def _load(path: Path) -> _Inventory:
     except ValidationError as error:
         message = f"the inventory must be a mapping of devices and topology: {_problems(error)}"
         raise InvalidInventoryError(message) from error
+    except ValueError as error:
+        message = "the inventory has a value that is not a valid inventory value"
+        raise InvalidInventoryError(message) from error
     records: dict[DeviceID, DeviceRecord] = {}
     entries: dict[DeviceID, _Entry] = {}
     for entry in data.devices:
@@ -288,7 +291,10 @@ def _yaml_problem(error: yaml.YAMLError) -> str:
     """Return the problem and its line and column, never a part of the file."""
     if not isinstance(error, yaml.MarkedYAMLError):
         return type(error).__name__
-    problems = "; ".join(part for part in (error.context, error.problem) if part)
+    parts: tuple[str | None, ...] = (error.context, error.problem)
+    if isinstance(error, yaml.constructor.ConstructorError):
+        parts = ("the file uses a YAML tag that is not permitted",)
+    problems = "; ".join(part for part in parts if part)
     mark = error.problem_mark
     where = f" at line {mark.line + 1}, column {mark.column + 1}" if mark else ""
     return f"{problems}{where}"

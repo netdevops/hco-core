@@ -146,6 +146,7 @@ def test_an_empty_inventory_lists_zero_devices(tmp_path: Path, text: str) -> Non
         (f"devices:\n{DEVICE}, x: &a [1, 1]}}\n  - {{y: *a}}\n", "aliases"),
         ("devices: " + "[" * 5000 + "]" * 5000 + "\n", "nested"),
         ("devices: {r1: 1}\n", "devices"),
+        ("devices: []\nx: 2001-02-30\n", "not a valid inventory value"),
         ("- r1\n", "mapping"),
         ("devices: [\n", r"YAML.*line 2, column 1"),
         ("devices: \x01\n", "ReaderError"),
@@ -180,6 +181,7 @@ SECRET = "hunter2-SECRET"  # ruff: ignore[hardcoded-password-string]
         f"devices:\n{DEVICE}, in_maintenance: {SECRET}}}\n",
         f"devices: {SECRET}\n",
         f'devices:\n  - password: "{SECRET}}}\n',
+        f"devices: !{SECRET} x\n",
     ],
 )
 def test_an_error_never_repeats_an_inventory_value(tmp_path: Path, text: str) -> None:
@@ -218,3 +220,9 @@ def test_a_file_over_the_size_limit_is_refused(
     monkeypatch.setattr(yaml_file, "MAX_INVENTORY_BYTES", 10)
     with pytest.raises(InvalidInventoryError, match="10 bytes"):
         asyncio.run(write(tmp_path, "devices: []\n").list_devices())
+
+
+def test_a_date_that_does_not_exist_is_not_healthy(tmp_path: Path) -> None:
+    """A date such as 2001-02-30 makes the inventory invalid, not a crash."""
+    sot = write(tmp_path, "devices: []\nx: 2001-02-30\n")
+    assert not asyncio.run(sot.health()).healthy
