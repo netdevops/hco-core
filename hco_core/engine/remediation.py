@@ -41,15 +41,7 @@ def build_bundle(  # ruff: ignore[too-many-arguments]
 ) -> RemediationBundle:
     """Return the remediation, rollback, future config, and future report.
 
-    Args:
-        platform_name: The platform name of the running config.
-        running_dump: The running config as Dump JSON.
-        intended_dump: The intended config as Dump JSON.
-        plugins: Transforms that change the remediation before it is read.
-        tag_rules: `TagRule` dicts to apply to the remediation.
-        intended_platform_name: The platform of the intended config, when it differs.
-            Different drivers raise `DriverMismatchError`.
-
+    Pass `intended_platform_name` when the intended config uses another platform.
     """
     with engine_errors():
         running = _load(platform_name, running_dump)

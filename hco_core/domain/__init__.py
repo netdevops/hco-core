@@ -41,13 +41,6 @@ from hco_core.domain.observability import (
     Threshold,
 )
 from hco_core.domain.plan import PlanRequest, PlanResult
-from hco_core.domain.remediation import (
-    DumpJson,
-    DumpLineJson,
-    FutureReportData,
-    NegationFact,
-    RemediationBundle,
-)
 from hco_core.domain.risk import (
     ChangeSet,
     ImpactFinding,
@@ -76,16 +69,12 @@ __all__ = (
     "DeviceRecord",
     "DeviceSelector",
     "DryRunResult",
-    "DumpJson",
-    "DumpLineJson",
-    "FutureReportData",
     "HealthDelta",
     "HealthStatus",
     "ImpactFinding",
     "MetricWindow",
     "ModelBinding",
     "ModelInfo",
-    "NegationFact",
     "Notification",
     "PlanRequest",
     "PlanResult",
@@ -94,7 +83,6 @@ __all__ = (
     "ProposalHandle",
     "ProposalStatus",
     "ProviderKind",
-    "RemediationBundle",
     "RiskAssessment",
     "RiskEvidence",
     "RiskTier",

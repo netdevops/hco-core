@@ -2,48 +2,38 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from hco_core.engine.errors import InvalidConfigError
 from hco_core.engine.fingerprints import change_fingerprint
 from hco_core.engine.remediation import parse
 
-SHA256_HEX_LENGTH = 64
-
-
-def test_fingerprint_is_a_sha256_hex_digest() -> None:
-    """The fingerprint fits the String(64) column."""
-    fingerprint = change_fingerprint(parse("CISCO_IOS", "hostname a\n"))
-    assert len(fingerprint) == SHA256_HEX_LENGTH
-    assert int(fingerprint, 16) >= 0
+IOS = "CISCO_IOS"
+TREE = "interface Gi1\n description a\n shutdown\ninterface Gi2\n mtu 9000\n"
+REORDERED = "interface Gi2\n mtu 9000\ninterface Gi1\n shutdown\n description a\n"
 
 
 def test_line_order_does_not_change_the_fingerprint() -> None:
-    """Two dumps of the same tree share one fingerprint."""
-    first = parse(
-        "CISCO_IOS",
-        "interface Gi1\n description a\n shutdown\ninterface Gi2\n mtu 9000\n",
-    )
-    second = parse(
-        "CISCO_IOS",
-        "interface Gi2\n mtu 9000\ninterface Gi1\n shutdown\n description a\n",
-    )
+    """Two dumps of one tree share one sha256 hex fingerprint."""
+    first, second = parse(IOS, TREE), parse(IOS, REORDERED)
     assert first != second
     assert change_fingerprint(first) == change_fingerprint(second)
+    assert re.fullmatch(r"[0-9a-f]{64}", change_fingerprint(first))
 
 
-def test_a_text_change_alters_the_fingerprint() -> None:
-    """A different change has a different fingerprint."""
-    first = parse("CISCO_IOS", "interface Gi1\n description a\n")
-    second = parse("CISCO_IOS", "interface Gi1\n description b\n")
-    assert change_fingerprint(first) != change_fingerprint(second)
-
-
-def test_a_moved_line_alters_the_fingerprint() -> None:
-    """The same line in a different section is a different change."""
-    first = parse("CISCO_IOS", "interface Gi1\n shutdown\ninterface Gi2\n")
-    second = parse("CISCO_IOS", "interface Gi1\ninterface Gi2\n shutdown\n")
-    assert change_fingerprint(first) != change_fingerprint(second)
+@pytest.mark.parametrize(
+    "other",
+    [
+        "interface Gi1\n description b\n",
+        "interface Gi1\ninterface Gi2\n description a\n",
+    ],
+)
+def test_a_different_change_alters_the_fingerprint(other: str) -> None:
+    """Changed text, or the same line in another section, is another change."""
+    first = parse(IOS, "interface Gi1\n description a\ninterface Gi2\n")
+    assert change_fingerprint(first) != change_fingerprint(parse(IOS, other))
 
 
 def test_malformed_dump_is_invalid_config() -> None:

@@ -130,10 +130,6 @@ assert negation.text == "no ip http server"
 assert len(change_fingerprint(bundle.remediation_dump)) == 64
 ```
 
-An unresolved negation is a negation that matches nothing on the device. The
-example device has no `ip http server` line, so the change does not apply
-cleanly. Two devices that need the same change share one fingerprint.
-
 ## Requirements
 
 Python 3.12 to 3.14.

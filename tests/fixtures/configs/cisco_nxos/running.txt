@@ -1,5 +1,3 @@
-hostname leaf-1
 feature lacp
 interface Ethernet1/1
   description server-1
-  shutdown

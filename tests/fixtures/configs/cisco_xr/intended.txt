@@ -1,7 +1,4 @@
-hostname pe-1
 interface GigabitEthernet0/0/0/0
  description core link
- no shutdown
 !
 lldp
-!

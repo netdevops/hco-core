@@ -27,7 +27,6 @@ class NegationFact(BaseModel):
 
     text: str
     path: tuple[str, ...]
-    """The text of each line from the top-level section down to this line."""
     lineage: tuple[Mapping[str, str], ...]
     """`MatchRule` dicts that select this line, in the shape `PlanRequest` uses."""
 
@@ -36,9 +35,7 @@ class FutureReportData(BaseModel):
     """How the negations of a remediation resolve against the running config."""
 
     unresolved_negations: tuple[NegationFact, ...]
-    """Negations whose positive form matches nothing on the device."""
     idempotency_replacements: tuple[NegationFact, ...]
-    """Negations that stay in the config because they replace a tracked line."""
 
 
 class RemediationBundle(BaseModel):
