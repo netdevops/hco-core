@@ -23,6 +23,7 @@ packages = [{ include = "hco_core", from = "." }]
 python = ">=3.12,<3.15"
 pydantic = "^2.9"
 hier-config = ">=4.0.0b4,<5.0"
+pyyaml = ">=6.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "*"
@@ -31,6 +32,7 @@ mypy = "*"
 pyright = "*"
 ruff = "*"
 towncrier = "*"
+types-pyyaml = "*"
 
 [build-system]
 requires = ["poetry-core>=2.3.2"]
