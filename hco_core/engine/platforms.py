@@ -1,6 +1,7 @@
 """The safe-apply strategy and the read-only commands of each platform."""
 
 from collections.abc import Iterable, Mapping
+from enum import Enum
 from types import MappingProxyType
 from typing import Self
 
@@ -179,9 +180,11 @@ PLATFORMS: Mapping[str, PlatformProfile] = MappingProxyType(
 def canonical_platform_name(name: str) -> str:
     """Return the registered platform name in upper case, as `Platform` names are.
 
-    The `hier_config` registry finds a name in any case. A name with no
-    registered driver raises `UnknownPlatformError`.
+    The `hier_config` registry finds a name in any case. A `Platform` member
+    gives its name, never its positional value. A name with no registered
+    driver raises `UnknownPlatformError`.
     """
+    platform_name = name.name if isinstance(name, Enum) else name
     with engine_errors():
-        get_hconfig_driver(name)
-    return name.upper()
+        get_hconfig_driver(platform_name)
+    return platform_name.upper()
