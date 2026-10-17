@@ -173,8 +173,9 @@ assert "show interfaces status" in profile.commands_for(facts.top_level_sections
   platform hold the global and the VRF forms, such as
   `ip route vrf {vrf} 0.0.0.0/0` on `ARISTA_EOS`. The longest match wins.
 - `touches_mgmt_path` is true when the change touches an interface that holds
-  the management address, or a default route in `mgmt_vrf`. When `mgmt_vrf` is `None`, any default route
-  counts, and a change of the default gateway of the view counts.
+  the management address, or a default route in `mgmt_vrf`. When `mgmt_vrf`
+  is `None`, any default route counts, and a change of the default gateway of
+  the view counts.
 - The management address must be an IPv4 address. A host name or an IPv6
   address matches no interface.
 - On `CISCO_IOS`, the `hier_config` view gives an empty VRF for

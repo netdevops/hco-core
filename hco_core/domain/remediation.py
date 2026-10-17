@@ -87,7 +87,8 @@ class ConfigDerived(BaseModel):
     """The VRF of the holders, or None for the global table, no holder, or two VRFs."""
     default_routes_touched: tuple[DefaultRouteFact, ...]
     touches_mgmt_path: bool
-    """True if the change touches `mgmt_interface` or a default route in `mgmt_vrf`.
+    """True if the change touches a holder of the management address or a route in `mgmt_vrf`.
 
-    When `mgmt_vrf` is None, any default route and a default gateway change count.
+    A holder is any running interface that holds the management address. When
+    `mgmt_vrf` is None, any default route and a default gateway change count.
     """
