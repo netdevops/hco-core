@@ -127,26 +127,30 @@ def test_an_empty_inventory_lists_zero_devices(tmp_path: Path, text: str) -> Non
 @pytest.mark.parametrize(
     ("text", "message"),
     [
-        (f"devices:\n{DEVICE.replace('CISCO_IOS', 'NOPE_OS')}}}\n", "edge-1.*NOPE_OS"),
-        (f"devices:\n{DEVICE}, metadata: {{rack: {{row: 1}}}}}}\n", "edge-1.*rack"),
+        (f"devices:\n{DEVICE.replace('CISCO_IOS', 'NOPE_OS')}}}\n", "'r1'.*NOPE_OS"),
+        (f"devices:\n{DEVICE}, metadata: {{rack: {{row: 1}}}}}}\n", "'r1'.*rack"),
         (f"devices:\n{DEVICE}}}\n{DEVICE}}}\n", "r1.*more than once"),
         (
             f"devices:\n{DEVICE}, intended_config: ../x.txt}}\n",
-            "edge-1.*intended_config",
+            "'r1'.*intended_config",
         ),
         (
             f"devices:\n{DEVICE}, intended_config: missing.txt}}\n",
-            "edge-1.*missing.txt",
+            "'r1'.*missing.txt",
         ),
-        (f"devices:\n{DEVICE}, criticality: extreme}}\n", "edge-1"),
+        (f"devices:\n{DEVICE}, criticality: extreme}}\n", "'r1'"),
         (
             f"devices:\n{DEVICE.replace('CISCO_IOS', 'cisco_ios')}}}\n",
-            "edge-1.*use CISCO_IOS",
+            "'r1'.*use CISCO_IOS",
         ),
         (f"devices:\n{DEVICE}, x: &a [1, 1]}}\n  - {{y: *a}}\n", "aliases"),
         ("devices: " + "[" * 5000 + "]" * 5000 + "\n", "nested"),
         ("devices: {r1: 1}\n", "devices"),
-        ("devices: []\nx: 2001-02-30\n", "not a valid inventory value"),
+        ("devices: []\nx: 2001-02-30\n", "date or time value is not valid; put quotes"),
+        (
+            f"devices:\n{DEVICE}, config_context: {{d: 2026-10-16}}}}\n",
+            r"^device 'r1', config_context key 'd': .*put quotes around a date",
+        ),
         ("- r1\n", "mapping"),
         ("devices: [\n", r"YAML.*line 2, column 1"),
         ("devices: \x01\n", "ReaderError"),
@@ -209,7 +213,7 @@ def test_an_intended_config_that_is_not_utf8_is_invalid(tmp_path: Path) -> None:
     """The intended config file must be UTF-8 too."""
     (tmp_path / "r1.txt").write_bytes(b"\xff\xfe")
     sot = write(tmp_path, f"devices:\n{DEVICE}, intended_config: r1.txt}}\n")
-    with pytest.raises(InvalidInventoryError, match=r"edge-1.*UTF-8"):
+    with pytest.raises(InvalidInventoryError, match=r"'r1'.*UTF-8"):
         asyncio.run(sot.intended_config(R1))
 
 
@@ -226,3 +230,9 @@ def test_a_date_that_does_not_exist_is_not_healthy(tmp_path: Path) -> None:
     """A date such as 2001-02-30 makes the inventory invalid, not a crash."""
     sot = write(tmp_path, "devices: []\nx: 2001-02-30\n")
     assert not asyncio.run(sot.health()).healthy
+
+
+def test_a_metadata_date_becomes_a_string(tmp_path: Path) -> None:
+    """An unquoted date in metadata is a scalar, so it becomes its text."""
+    sot = write(tmp_path, f"devices:\n{DEVICE}, metadata: {{since: 2026-10-16}}}}\n")
+    assert asyncio.run(sot.get_device(R1)).metadata == {"since": "2026-10-16"}

@@ -334,7 +334,9 @@ topology:
   unquoted date is an error.
 - The file must be UTF-8 text of 1 MiB or less, with nesting of 32 levels or
   less. YAML anchors and aliases are not permitted.
-- An error names the device and the key, never a value from the file.
+- An error names the device id and the key. It never shows a `config_context`
+  or `metadata` value. A platform name or a file path from the inventory can
+  appear, because you must see which one is wrong.
 
 The `env` provider reads `HCO_SECRET_<KEY>_USERNAME` and
 `HCO_SECRET_<KEY>_PASSWORD`, and `HCO_SECRET_<KEY>_API_KEY` for an API key.

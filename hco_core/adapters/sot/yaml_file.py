@@ -3,12 +3,12 @@
 import asyncio
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import cast
 
 import yaml
-from pydantic import ConfigDict, Field, JsonValue, ValidationError
+from pydantic import ConfigDict, Field, JsonValue, TypeAdapter, ValidationError
 
 from hco_core.adapters.errors import DeviceNotFoundError, InvalidInventoryError
 from hco_core.domain.base import BaseModel
@@ -40,9 +40,16 @@ class _Entry(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     intended_config: str | None = None
-    config_context: dict[str, JsonValue] = Field(default_factory=dict)
+    config_context: dict[str, object] = Field(default_factory=dict)
     secret: str | None = None
-    metadata: dict[str, JsonValue] = Field(default_factory=dict)
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
+_JSON_VALUE: TypeAdapter[JsonValue] = TypeAdapter(JsonValue)
+_CONTEXT_HINT = (
+    "the value must be text, a number, a boolean, a list, or a mapping; "
+    "put quotes around a date or a time"
+)
 
 
 class _Topology(BaseModel):
@@ -176,16 +183,17 @@ class YamlSourceOfTruth:
         record = inventory.records[device_id]
         folder = self._path.parent.resolve()
         path = (folder / entry.intended_config).resolve()
-        where = f"device {record.name!r}, key 'intended_config'"
+        where = f"device {record.id!r}, key 'intended_config'"
         if not path.is_relative_to(folder):
             message = f"{where}: {entry.intended_config} is outside {folder}"
             raise InvalidInventoryError(message)
         try:
             body = path.read_text(encoding="utf8")
-        except (OSError, UnicodeDecodeError) as error:
-            message = (
-                f"{where}: cannot read {entry.intended_config} as UTF-8 text: {error}"
-            )
+        except UnicodeDecodeError as error:
+            message = f"{where}: {entry.intended_config} is not UTF-8 text"
+            raise InvalidInventoryError(message) from error
+        except OSError as error:
+            message = f"{where}: cannot read {entry.intended_config}: {error}"
             raise InvalidInventoryError(message) from error
         return ConfigDocument(
             body=body,
@@ -219,7 +227,7 @@ def _load(path: Path) -> _Inventory:
         message = f"the inventory must be a mapping of devices and topology: {_problems(error)}"
         raise InvalidInventoryError(message) from error
     except ValueError as error:
-        message = "the inventory has a value that is not a valid inventory value"
+        message = "a date or time value is not valid; put quotes around dates"
         raise InvalidInventoryError(message) from error
     records: dict[DeviceID, DeviceRecord] = {}
     entries: dict[DeviceID, _Entry] = {}
@@ -262,15 +270,21 @@ def _record(entry: _Entry) -> DeviceRecord:
 
     """
     fields = dict(entry.model_extra or {})
-    device = repr(fields.get("name", fields.get("id")))
+    device = repr(fields.get("id", fields.get("name")))
     metadata: dict[str, str] = {}
     for key, value in entry.metadata.items():
-        if isinstance(value, dict | list):
+        if not isinstance(value, str | int | float | date | None):
             message = (
                 f"device {device}, metadata key {key!r}: the value must be a scalar"
             )
             raise InvalidInventoryError(message)
         metadata[key] = str(value)
+    for key, value in entry.config_context.items():
+        try:
+            _JSON_VALUE.validate_python(value)
+        except ValidationError as error:
+            message = f"device {device}, config_context key {key!r}: {_CONTEXT_HINT}"
+            raise InvalidInventoryError(message) from error
     try:
         record = DeviceRecord.model_validate({**fields, "metadata": metadata})
     except ValidationError as error:
