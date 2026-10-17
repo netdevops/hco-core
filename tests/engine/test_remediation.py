@@ -14,7 +14,12 @@ from hco_core.domain.remediation import (
     RemediationBundle,
 )
 from hco_core.engine import errors
-from hco_core.engine.remediation import build_bundle, parse, render_lines
+from hco_core.engine.remediation import (
+    build_bundle,
+    parse,
+    render_lines,
+    validated_dump,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -161,6 +166,10 @@ ERROR_CASES: dict[str, tuple[Callable[[], object], type[errors.EngineError]]] = 
     ),
     "first line below the top level": (
         lambda: render_lines(IOS, {"lines": [line(3, "a")]}),
+        errors.InvalidConfigError,
+    ),
+    "dump of the wrong shape": (
+        lambda: validated_dump({"lines": "x"}),
         errors.InvalidConfigError,
     ),
     "depth skips a level": (

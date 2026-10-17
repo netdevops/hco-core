@@ -67,11 +67,12 @@ def validated_dump(dump: Mapping[str, object]) -> Dump:
     """Return the dump if its depths describe one tree.
 
     Raises:
-        InvalidConfigError: If the first depth is not 1, or a depth grows by more
-            than one level.
+        InvalidConfigError: If the dump fails the schema, the first depth is not
+            1, or a depth grows by more than one level.
 
     """
-    checked = Dump.model_validate(dump)
+    with engine_errors():
+        checked = Dump.model_validate(dump)
     parent_depth = 0
     for line in checked.lines:
         if not 1 <= line.depth <= parent_depth + 1:
