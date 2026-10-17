@@ -4,7 +4,6 @@ from collections.abc import Iterable, Mapping
 from types import MappingProxyType
 from typing import Self
 
-from hier_config.models import Platform
 from hier_config.registry import get_hconfig_driver
 from pydantic import model_validator
 
@@ -178,11 +177,11 @@ PLATFORMS: Mapping[str, PlatformProfile] = MappingProxyType(
 
 
 def canonical_platform_name(name: str) -> str:
-    """Return the `Platform` name for a name in any case, or a custom name as given.
+    """Return the registered platform name in upper case, as `Platform` names are.
 
-    A name with no registered driver raises `UnknownPlatformError`.
+    The `hier_config` registry finds a name in any case. A name with no
+    registered driver raises `UnknownPlatformError`.
     """
     with engine_errors():
         get_hconfig_driver(name)
-    member = Platform.__members__.get(name.upper())
-    return member.name if member else name
+    return name.upper()

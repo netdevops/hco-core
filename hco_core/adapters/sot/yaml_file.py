@@ -26,7 +26,7 @@ from hco_core.domain.secrets import SecretPurpose, SecretRef
 from hco_core.engine.errors import UnknownPlatformError
 from hco_core.engine.platforms import canonical_platform_name
 
-MAX_INVENTORY_BYTES = 10 * 1024 * 1024
+MAX_INVENTORY_BYTES = 1024 * 1024
 """The largest inventory file that the adapter reads."""
 MAX_INVENTORY_DEPTH = 32
 """The deepest nesting of mappings and lists in an inventory file."""
@@ -213,7 +213,7 @@ def _load(path: Path) -> _Inventory:
         message = "the inventory is not UTF-8 text"
         raise InvalidInventoryError(message) from error
     except yaml.YAMLError as error:
-        message = f"the inventory is not valid YAML: {error}"
+        message = f"the inventory is not valid YAML: {_yaml_problem(error)}"
         raise InvalidInventoryError(message) from error
     except ValidationError as error:
         message = f"the inventory must be a mapping of devices and topology: {_problems(error)}"
@@ -282,6 +282,16 @@ def _record(entry: _Entry) -> DeviceRecord:
         message = f"device {device}: unknown platform_name {record.platform_name!r}; use {canonical}"
         raise InvalidInventoryError(message)
     return record
+
+
+def _yaml_problem(error: yaml.YAMLError) -> str:
+    """Return the problem and its line and column, never a part of the file."""
+    if not isinstance(error, yaml.MarkedYAMLError):
+        return type(error).__name__
+    problems = "; ".join(part for part in (error.context, error.problem) if part)
+    mark = error.problem_mark
+    where = f" at line {mark.line + 1}, column {mark.column + 1}" if mark else ""
+    return f"{problems}{where}"
 
 
 def _problems(error: ValidationError) -> str:

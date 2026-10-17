@@ -330,7 +330,7 @@ topology:
 - Each `metadata` value becomes a string. A list or a mapping is an error.
 - `secret` is the key of the `env` secret reference. The default is the device
   id.
-- The file must be UTF-8 text of 10 MiB or less, with nesting of 32 levels or
+- The file must be UTF-8 text of 1 MiB or less, with nesting of 32 levels or
   less. YAML anchors and aliases are not permitted.
 - An error names the device and the key, never a value from the file.
 

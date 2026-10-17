@@ -143,10 +143,11 @@ def test_canonical_platform_name_refuses_an_unknown_name(name: str) -> None:
         canonical_platform_name(name)
 
 
-def test_canonical_platform_name_keeps_a_custom_name() -> None:
-    """A custom name that `register_driver()` registered stays as it is."""
-    register_driver("hco_test_custom", HConfigDriverCiscoIOS)
+def test_canonical_platform_name_gives_a_custom_name_in_upper_case() -> None:
+    """The registry finds a custom name in any case, so the name is upper case."""
+    register_driver("Hco_Test_Custom", HConfigDriverCiscoIOS)
     try:
-        assert canonical_platform_name("hco_test_custom") == "hco_test_custom"
+        for name in ("hco_test_custom", "Hco_Test_Custom", "HCO_TEST_CUSTOM"):
+            assert canonical_platform_name(name) == "HCO_TEST_CUSTOM"
     finally:
-        unregister_driver("hco_test_custom")
+        unregister_driver("HCO_TEST_CUSTOM")

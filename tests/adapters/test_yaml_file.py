@@ -147,7 +147,8 @@ def test_an_empty_inventory_lists_zero_devices(tmp_path: Path, text: str) -> Non
         ("devices: " + "[" * 5000 + "]" * 5000 + "\n", "nested"),
         ("devices: {r1: 1}\n", "devices"),
         ("- r1\n", "mapping"),
-        ("devices: [\n", "YAML"),
+        ("devices: [\n", r"YAML.*line 2, column 1"),
+        ("devices: \x01\n", "ReaderError"),
     ],
 )
 def test_an_invalid_inventory_is_refused(
@@ -178,6 +179,7 @@ SECRET = "hunter2-SECRET"  # ruff: ignore[hardcoded-password-string]
         f"devices:\n{DEVICE}, password: {SECRET}}}\n",
         f"devices:\n{DEVICE}, in_maintenance: {SECRET}}}\n",
         f"devices: {SECRET}\n",
+        f'devices:\n  - password: "{SECRET}}}\n',
     ],
 )
 def test_an_error_never_repeats_an_inventory_value(tmp_path: Path, text: str) -> None:
