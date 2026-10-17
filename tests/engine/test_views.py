@@ -377,8 +377,8 @@ def test_a_replaced_default_route_is_two_facts() -> None:
     )
 
 
-def test_the_view_vrf_is_used_before_the_child_line() -> None:
-    """The fallback reads the child line only when the view has no VRF."""
+def test_the_ios_view_reads_ip_vrf_forwarding() -> None:
+    """The CISCO_IOS view gives the VRF of `ip vrf forwarding`."""
     running = (
         "interface Gi0/0\n ip vrf forwarding OLD\n ip address 10.0.0.1 255.255.255.0\n"
     )
@@ -432,3 +432,46 @@ def test_a_default_gateway_change_outside_the_mgmt_vrf_is_not_the_path() -> None
     facts = derive(IOS, mgmt, f"{mgmt}ip default-gateway 10.0.0.254\n")
     assert facts.mgmt_vrf == "MGMT"
     assert not facts.touches_mgmt_path
+
+
+TWO_HOLDERS = {
+    IOS: "interface Gi0/0\n vrf forwarding CUST\n ip address 10.0.0.1 255.255.255.0\n"
+    "interface Gi0/9\n vrf forwarding MGMT\n ip address 10.0.0.1 255.255.255.0\n",
+    "ARISTA_EOS": "interface Ethernet1\n   vrf CUST\n   ip address 10.0.0.1/24\n"
+    "interface Management1\n   vrf MGMT\n   ip address 10.0.0.1/24\n",
+}
+
+
+@pytest.mark.parametrize("platform_name", sorted(TWO_HOLDERS))
+def test_holders_in_two_vrfs_make_the_mgmt_vrf_unknown(platform_name: str) -> None:
+    """Every holder of the address counts, and two VRFs make `mgmt_vrf` None."""
+    running = TWO_HOLDERS[platform_name]
+    route = ROUTES[platform_name][1].format(vrf="MGMT")
+    facts = derive(platform_name, running, running + route)
+    assert facts.mgmt_vrf is None
+    assert facts.mgmt_interface == min(MGMT_NAMES[platform_name])
+    assert facts.touches_mgmt_path
+    second = max(MGMT_NAMES[platform_name])
+    moved = running.replace("MGMT", "OTHER")
+    facts = derive(platform_name, running, moved)
+    assert facts.interfaces_touched == (second,)
+    assert facts.touches_mgmt_path
+
+
+MGMT_NAMES = {IOS: ("Gi0/0", "Gi0/9"), "ARISTA_EOS": ("Ethernet1", "Management1")}
+LONG_VRF = "V" * 300
+
+
+@pytest.mark.parametrize("platform_name", ["CISCO_NXOS", "CISCO_XR"])
+def test_a_cut_vrf_name_counts_for_the_mgmt_vrf(platform_name: str) -> None:
+    """A VRF name that the parent cut shortens still matches the management VRF."""
+    mgmt = MGMT[platform_name][1].format(vrf=LONG_VRF)
+    route = ROUTES[platform_name][1].format(vrf=LONG_VRF)
+    facts = derive(platform_name, mgmt, mgmt + route)
+    assert facts.mgmt_vrf == LONG_VRF
+    (fact,) = facts.default_routes_touched
+    assert fact.vrf is not None
+    assert LONG_VRF.startswith(fact.vrf)
+    assert facts.touches_mgmt_path
+    other = ROUTES[platform_name][1].format(vrf="CUST")
+    assert not derive(platform_name, mgmt, mgmt + other).touches_mgmt_path
