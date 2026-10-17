@@ -106,6 +106,34 @@ is lossy.
 opaque `SecretRef`. Inventory responses are logged, cached, and rendered in a
 user interface; a credential must not be in any of those.
 
+## Engine
+
+`hco_core.engine` is the only package that imports `hier_config`. Its
+functions take and return `Dump` JSON, never rendered text. Every error is an
+`EngineError` subclass, never a `hier_config` error.
+
+```python
+from hco_core.engine.fingerprints import change_fingerprint
+from hco_core.engine.remediation import build_bundle, parse, render_lines
+
+running = parse("CISCO_IOS", "interface Gi1/0/1\n shutdown\n")
+intended = parse("CISCO_IOS", "interface Gi1/0/1\n no shutdown\nno ip http server\n")
+bundle = build_bundle("CISCO_IOS", running, intended)
+
+assert render_lines("CISCO_IOS", bundle.remediation_dump) == (
+    "interface Gi1/0/1",
+    "  no shutdown",
+    "no ip http server",
+)
+(negation,) = bundle.future_report.unresolved_negations
+assert negation.text == "no ip http server"
+assert len(change_fingerprint(bundle.remediation_dump)) == 64
+```
+
+An unresolved negation is a negation that matches nothing on the device. The
+example device has no `ip http server` line, so the change does not apply
+cleanly. Two devices that need the same change share one fingerprint.
+
 ## Requirements
 
 Python 3.12 to 3.14.

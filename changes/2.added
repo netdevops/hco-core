@@ -1,0 +1,2 @@
+Added the remediation engine. It builds a remediation, a rollback, and a future config from two configs, and reports unresolved negations.
+Added change fingerprints. Two devices that need the same change get the same fingerprint.
