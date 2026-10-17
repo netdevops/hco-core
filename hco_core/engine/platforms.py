@@ -30,8 +30,8 @@ class PlatformProfile(BaseModel):
     """What HCO may send to one platform, and how it applies a change.
 
     Every command must be printable ASCII and start with `show `, with no `;`,
-    no `>`, and only output filters after a pipe. The model refuses any other command, because a collection
-    command must never change the device.
+    no `>`, and only output filters after a pipe. The model refuses any other
+    command, because a collection command must never change the device.
     """
 
     strategy: ApplyStrategy

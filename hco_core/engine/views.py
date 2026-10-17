@@ -124,7 +124,8 @@ def _default_routes(config: HConfig, prefixes: tuple[str, ...]) -> set[str]:
     """Return the paths of the lines where a default route prefix match ends.
 
     A match starts at a line or a parent and joins texts down to the line. The
-    search stops at the length of the longest prefix, so the work is linear.
+    joined parent texts stop at the length of the longest prefix, so the work
+    is linear.
     """
     if not prefixes:
         return set()
@@ -135,12 +136,14 @@ def _default_routes(config: HConfig, prefixes: tuple[str, ...]) -> set[str]:
     for line in config.all_children():
         del open_texts[line.depth - 1 :]
         open_texts.append(line.text.removeprefix(negation))
-        joined = ""
-        for text in reversed(open_texts):
-            if len(joined) >= longest:
-                break
-            joined = f"{text} {joined}" if joined else text
+        joined = open_texts[-1][:longest]
+        parents = ""
+        for text in (*reversed(open_texts[:-1]), None):
             if joined.startswith(prefixes):
                 found.add("\n".join(open_texts))
                 break
+            if text is None or len(parents) >= longest:
+                break
+            parents = f"{text} {parents}"
+            joined = f"{text} {joined}"
     return found

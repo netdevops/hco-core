@@ -292,3 +292,17 @@ def test_a_deep_default_route_is_found() -> None:
     assert not derive(
         "CISCO_XR", chain, deep.replace("0.0.0.0/0", "10.9.0.0/16")
     ).touches_mgmt_path
+
+
+MGMT_ROUTE = "0.0.0.0/0 MgmtEth0/RP0/CPU0/0 10.0.0.254"
+
+
+@pytest.mark.parametrize("vrf", ["", " vrf MGMT\n"])
+def test_a_long_xr_default_route_is_found(vrf: str) -> None:
+    """A route line longer than the prefix still gets its parents joined."""
+    indent = " " * (vrf.count("\n") + 1)
+    family = f"router static\n{vrf}{indent}address-family ipv4 unicast\n"
+    route = f"{family}{indent} {MGMT_ROUTE}\n"
+    assert derive("CISCO_XR", family, route).touches_mgmt_path
+    changed = route.replace("10.0.0.254", "10.0.0.253")
+    assert derive("CISCO_XR", route, changed).touches_mgmt_path
