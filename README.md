@@ -130,6 +130,52 @@ assert negation.text == "no ip http server"
 assert len(change_fingerprint(bundle.remediation_dump)) == 64
 ```
 
+### Config-derived facts and the platform table
+
+`config_derived()` reports what a remediation touches. It gives facts only.
+The caller decides the risk of each fact.
+
+```python
+from hco_core.domain.device import DeviceRecord
+from hco_core.domain.ids import DeviceID
+from hco_core.engine.platforms import PLATFORMS
+from hco_core.engine.remediation import build_bundle, parse
+from hco_core.engine.views import config_derived
+
+running = parse("CISCO_IOS", "interface Gi0/0\n ip address 10.0.0.1 255.255.255.0\n")
+intended = parse("CISCO_IOS", "interface Gi0/0\n ip address 10.0.0.2 255.255.255.0\n")
+bundle = build_bundle("CISCO_IOS", running, intended)
+device = DeviceRecord(
+    id=DeviceID("r1"),
+    name="r1",
+    platform_name="CISCO_IOS",
+    mgmt_address="10.0.0.1",
+    metadata={},
+)
+
+facts = config_derived(bundle, running, device)
+assert facts.interfaces_touched == ("Gi0/0",)
+assert facts.touches_mgmt_path
+
+profile = PLATFORMS["CISCO_IOS"]
+assert profile.strategy == "ios_archive_replace"
+assert "show interfaces status" in profile.commands_for(facts.top_level_sections)
+```
+
+- `touches_mgmt_path` is true when the change touches the interface that holds
+  the management address, or a line that starts with one of the
+  `default_route_prefixes` of the platform.
+- The management address must be an IPv4 address. A host name or an IPv6
+  address matches no interface.
+- On `CISCO_IOS`, the `hier_config` view reads `ip default-gateway` only. The
+  default route prefixes find `ip route 0.0.0.0 0.0.0.0`. They do not find a
+  default route in a VRF on `CISCO_IOS`, such as `ip route vrf MGMT 0.0.0.0 0.0.0.0`.
+- In `hier_config` 4.0.0b4, the four built-in drivers have no unused-object
+  rules. So `unused_objects_before`, `unused_objects_after`, and
+  `unused_objects_created` are empty for these platforms.
+- Every command in the platform table is a `show` command. A profile refuses
+  any other command, and any output redirection.
+
 ## Requirements
 
 Python 3.12 to 3.14.
