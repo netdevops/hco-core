@@ -51,6 +51,8 @@ class RemediationBundle(BaseModel):
 class DefaultRouteFact(BaseModel):
     """An IPv4 default route that a remediation adds or removes."""
 
+    text: str
+    """The route line, after the parent lines that the platform prefix names."""
     vrf: str | None
     """The VRF of the route, or None for the global table."""
     negated: bool
@@ -82,6 +84,7 @@ class ConfigDerived(BaseModel):
     """The VRF of `mgmt_interface`, or None for the global table or no interface."""
     default_routes_touched: tuple[DefaultRouteFact, ...]
     touches_mgmt_path: bool
-    """True if the change touches `mgmt_interface`, the default gateway, or a
-    default route in `mgmt_vrf`. Without `mgmt_interface`, any default route counts.
+    """True if the change touches `mgmt_interface` or a default route in `mgmt_vrf`.
+
+    When `mgmt_vrf` is None, any default route and a default gateway change count.
     """
