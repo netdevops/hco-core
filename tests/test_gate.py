@@ -45,3 +45,12 @@ def test_towncrier_reads_fragments_of_the_seven_shared_types() -> None:
     assert towncrier["directory"] == "changes"
     assert {kind["directory"] for kind in towncrier["type"]} == CHANGE_TYPES
     assert (ROOT / towncrier["template"]).is_file()
+
+
+def test_ci_holds_the_validation_gate_at_full_branch_coverage() -> None:
+    """An untested branch in the gate is an untested path to a router."""
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf8")
+    assert (
+        "pytest -q tests/engine/test_validation.py --cov=hco_core.engine.validation"
+        " --cov-branch --cov-report=term-missing --cov-fail-under=100"
+    ) in workflow
