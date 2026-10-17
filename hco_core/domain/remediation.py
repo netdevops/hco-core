@@ -46,3 +46,26 @@ class RemediationBundle(BaseModel):
     rollback_dump: DumpJson
     future_dump: DumpJson
     future_report: FutureReportData
+
+
+class ConfigDerived(BaseModel):
+    """Facts about what a remediation touches, with no judgement of risk.
+
+    Names and texts are sorted. `touches_mgmt_path` is true when the change
+    touches the interface that holds the management address, or a default route.
+    """
+
+    interfaces_touched: tuple[str, ...]
+    bundles_touched: tuple[str, ...]
+    vlans_touched: tuple[int, ...]
+    nac_interfaces_touched: tuple[str, ...]
+    unused_objects_before: tuple[str, ...]
+    unused_objects_after: tuple[str, ...]
+    unused_objects_created: tuple[str, ...]
+    negation_count: int
+    section_negations: tuple[str, ...]
+    """Every negated top-level line."""
+    command_count: int
+    remediation_tags: tuple[str, ...]
+    top_level_sections: tuple[str, ...]
+    touches_mgmt_path: bool

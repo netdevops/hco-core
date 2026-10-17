@@ -28,6 +28,12 @@ class PlatformProfile(BaseModel):
     baseline_commands: tuple[str, ...]
     section_commands: SectionCommands = ()
     """Pairs of a top-level section prefix and the commands it adds."""
+    default_route_prefixes: tuple[str, ...] = ()
+    """Prefixes of an IPv4 default route, matched against a line and its parents.
+
+    `hco_core.engine.views` joins the texts from a parent down to the line, so
+    a prefix can include the parent line of a nested route.
+    """
 
     @model_validator(mode="after")
     def _only_show_commands(self) -> Self:
@@ -83,6 +89,7 @@ PLATFORMS: Mapping[str, PlatformProfile] = MappingProxyType(
                 ("ip route", ("show ip route static",)),
                 ("vlan", ("show vlan brief",)),
             ),
+            default_route_prefixes=("ip route 0.0.0.0 0.0.0.0",),
         ),
         "CISCO_NXOS": PlatformProfile(
             strategy=ApplyStrategy.NXOS_CHECKPOINT,
@@ -101,6 +108,7 @@ PLATFORMS: Mapping[str, PlatformProfile] = MappingProxyType(
                 ("ip route", ("show ip route static",)),
                 ("vlan", ("show vlan brief",)),
             ),
+            default_route_prefixes=("ip route 0.0.0.0/0",),
         ),
         "CISCO_XR": PlatformProfile(
             strategy=ApplyStrategy.IOSXR_COMMIT_CONFIRMED,
@@ -118,6 +126,7 @@ PLATFORMS: Mapping[str, PlatformProfile] = MappingProxyType(
                 ("ipv4 access-list", ("show access-lists ipv4",)),
                 ("router static", ("show route static",)),
             ),
+            default_route_prefixes=("address-family ipv4 unicast 0.0.0.0/0",),
         ),
         "ARISTA_EOS": PlatformProfile(
             strategy=ApplyStrategy.EOS_SESSION_COMMIT_TIMER,
@@ -136,6 +145,7 @@ PLATFORMS: Mapping[str, PlatformProfile] = MappingProxyType(
                 ("ip route", ("show ip route static",)),
                 ("vlan", ("show vlan brief",)),
             ),
+            default_route_prefixes=("ip route 0.0.0.0/0",),
         ),
     }
 )

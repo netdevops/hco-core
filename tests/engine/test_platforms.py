@@ -8,6 +8,12 @@ from hco_core.engine.platforms import PLATFORMS, PlatformProfile
 
 V1_PLATFORMS = ("CISCO_IOS", "CISCO_NXOS", "CISCO_XR", "ARISTA_EOS")
 WRITE_PREFIXES = ("configure", "write", "reload", "copy", "clear", "delete")
+DEFAULT_ROUTE_PREFIXES = {
+    "CISCO_IOS": ("ip route 0.0.0.0 0.0.0.0",),
+    "CISCO_NXOS": ("ip route 0.0.0.0/0",),
+    "CISCO_XR": ("address-family ipv4 unicast 0.0.0.0/0",),
+    "ARISTA_EOS": ("ip route 0.0.0.0/0",),
+}
 SECTIONS = ("interface Gi1", "no ip access-list extended OLD", "router bgp 65000")
 
 
@@ -42,6 +48,7 @@ def test_each_platform_has_its_safe_apply_strategy(
     assert profile.strategy is strategy
     assert profile.fingerprint_command.startswith("show ")
     assert profile.baseline_commands
+    assert profile.default_route_prefixes == DEFAULT_ROUTE_PREFIXES[platform_name]
 
 
 @pytest.mark.parametrize("platform_name", V1_PLATFORMS)
