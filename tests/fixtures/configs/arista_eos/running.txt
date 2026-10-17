@@ -1,0 +1,4 @@
+hostname spine-1
+interface Ethernet1
+   description leaf-1
+   shutdown

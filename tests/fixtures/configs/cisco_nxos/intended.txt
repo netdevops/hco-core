@@ -1,0 +1,6 @@
+hostname leaf-1
+feature lacp
+feature lldp
+interface Ethernet1/1
+  description server-1
+  no shutdown
