@@ -33,7 +33,7 @@ class ValidationOutcome(BaseModel):
 
     @property
     def ok(self) -> bool:
-        """Return True if the plan passed every check."""
+        """True if the plan passed every check."""
         return self.failed_check is None
 
     @model_validator(mode="after")
