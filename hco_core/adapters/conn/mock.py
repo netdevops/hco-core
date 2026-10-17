@@ -184,8 +184,8 @@ class MockSession:
         path = self._folder / name
         try:
             return await asyncio.to_thread(path.read_text, encoding="utf8")
-        except OSError as error:
-            message = f"no transcript {name} for device {self._device.id!r}"
+        except (OSError, UnicodeDecodeError) as error:
+            message = f"no UTF-8 transcript {name} for device {self._device.id!r}"
             raise DeviceUnreachableError(message) from error
 
 

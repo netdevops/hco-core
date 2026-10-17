@@ -324,16 +324,22 @@ topology:
 ```
 
 - Each device holds the `DeviceRecord` fields. `platform_name` must be a
-  platform name that `hier_config` knows.
+  platform name that `hier_config` knows, in the exact case, such as
+  `CISCO_IOS`. The error gives the correct name.
 - `intended_config` is a path inside the folder of the inventory file.
 - Each `metadata` value becomes a string. A list or a mapping is an error.
 - `secret` is the key of the `env` secret reference. The default is the device
   id.
+- The file must be UTF-8 text of 10 MiB or less, with nesting of 32 levels or
+  less. YAML anchors and aliases are not permitted.
+- An error names the device and the key, never a value from the file.
 
 The `env` provider reads `HCO_SECRET_<KEY>_USERNAME` and
 `HCO_SECRET_<KEY>_PASSWORD`, and `HCO_SECRET_<KEY>_API_KEY` for an API key.
 `<KEY>` is the key in upper case, with each character other than a letter or
-a digit changed to `_`. An error names the variable, never its value.
+a digit changed to `_`. Two keys that differ only in these characters, such as
+`a-b` and `a_b`, read the same variables. An error names the variable, never
+its value.
 
 The mock driver reads `<transcripts_dir>/<device id>/running.txt` and one file
 for each command, such as `show_version.txt`.

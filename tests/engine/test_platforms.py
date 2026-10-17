@@ -2,9 +2,16 @@
 
 import pytest
 from hier_config.models import Platform
+from hier_config.platforms.cisco_ios.driver import HConfigDriverCiscoIOS
+from hier_config.registry import register_driver, unregister_driver
 
 from hco_core.domain.apply import ApplyStrategy
-from hco_core.engine.platforms import PLATFORMS, PlatformProfile
+from hco_core.engine.errors import UnknownPlatformError
+from hco_core.engine.platforms import (
+    PLATFORMS,
+    PlatformProfile,
+    canonical_platform_name,
+)
 
 V1_PLATFORMS = ("CISCO_IOS", "CISCO_NXOS", "CISCO_XR", "ARISTA_EOS")
 WRITE_PREFIXES = ("configure", "write", "reload", "copy", "clear", "delete")
@@ -117,3 +124,29 @@ def test_profile_refuses_a_write_command(command: str, rule: str) -> None:
             baseline_commands=(command,),
         )
     assert rule in str(refused.value)
+
+
+@pytest.mark.parametrize(
+    ("name", "canonical"), [("CISCO_IOS", "CISCO_IOS"), ("cisco_ios", "CISCO_IOS")]
+)
+def test_canonical_platform_name_gives_the_platform_name(
+    name: str, canonical: str
+) -> None:
+    """A name in any case gives the `Platform` name."""
+    assert canonical_platform_name(name) == canonical
+
+
+@pytest.mark.parametrize("name", ["NOPE_OS", "1"])
+def test_canonical_platform_name_refuses_an_unknown_name(name: str) -> None:
+    """A name with no driver, or a `Platform` value, is unknown."""
+    with pytest.raises(UnknownPlatformError):
+        canonical_platform_name(name)
+
+
+def test_canonical_platform_name_keeps_a_custom_name() -> None:
+    """A custom name that `register_driver()` registered stays as it is."""
+    register_driver("hco_test_custom", HConfigDriverCiscoIOS)
+    try:
+        assert canonical_platform_name("hco_test_custom") == "hco_test_custom"
+    finally:
+        unregister_driver("hco_test_custom")

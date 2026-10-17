@@ -175,3 +175,48 @@ def test_confirm_and_rollback_refuse_to_write() -> None:
     for call in (session.confirm(result), session.rollback(result)):
         with pytest.raises(DeviceWritesDisabledError):
             asyncio.run(call)
+
+
+def test_apply_refuses_a_token_for_another_running_config_platform_or_key(
+    tmp_path: Path,
+) -> None:
+    """The token signs the running config, the platform, and the key."""
+    plan = signed_plan()
+    (tmp_path / "r1").mkdir()
+    (tmp_path / "r1" / "running.txt").write_text("hostname other\n", encoding="utf8")
+    eos = tmp_path / "e1"
+    eos.mkdir()
+    running = (TRANSCRIPTS / "r1" / "running.txt").read_text(encoding="utf8")
+    (eos / "running.txt").write_text(running, encoding="utf8")
+    sessions = (
+        (tmp_path, KEY, device()),
+        (tmp_path, KEY, device("e1", "ARISTA_EOS")),
+        (TRANSCRIPTS, b"o" * 32, device()),
+    )
+    for folder, key, record in sessions:
+
+        async def apply(
+            folder: Path = folder, key: bytes = key, record: DeviceRecord = record
+        ) -> None:
+            async with MockConnectionDriver(folder, token_key=key).session(
+                record, CREDENTIALS
+            ) as session:
+                await session.apply(plan)
+
+        with pytest.raises(InvalidTokenError):
+            asyncio.run(apply())
+
+
+def test_a_transcript_that_is_not_utf8_is_unreachable(tmp_path: Path) -> None:
+    """Bytes that are not UTF-8 in a transcript make the device unreachable."""
+    (tmp_path / "r1").mkdir()
+    (tmp_path / "r1" / "running.txt").write_bytes(b"\xff\xfe")
+
+    async def fetch() -> None:
+        async with MockConnectionDriver(tmp_path, token_key=KEY).session(
+            device(), CREDENTIALS
+        ) as session:
+            await session.fetch_running()
+
+    with pytest.raises(DeviceUnreachableError, match=r"running\.txt"):
+        asyncio.run(fetch())

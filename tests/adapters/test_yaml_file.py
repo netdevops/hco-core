@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from hco_core.adapters.errors import DeviceNotFoundError, InvalidInventoryError
+from hco_core.adapters.sot import yaml_file
 from hco_core.adapters.sot.yaml_file import YamlSourceOfTruth
 from hco_core.domain.config import ConfigFormat
 from hco_core.domain.device import DeviceSelector
@@ -138,6 +139,12 @@ def test_an_empty_inventory_lists_zero_devices(tmp_path: Path, text: str) -> Non
             "edge-1.*missing.txt",
         ),
         (f"devices:\n{DEVICE}, criticality: extreme}}\n", "edge-1"),
+        (
+            f"devices:\n{DEVICE.replace('CISCO_IOS', 'cisco_ios')}}}\n",
+            "edge-1.*use CISCO_IOS",
+        ),
+        (f"devices:\n{DEVICE}, x: &a [1, 1]}}\n  - {{y: *a}}\n", "aliases"),
+        ("devices: " + "[" * 5000 + "]" * 5000 + "\n", "nested"),
         ("devices: {r1: 1}\n", "devices"),
         ("- r1\n", "mapping"),
         ("devices: [\n", "YAML"),
@@ -160,3 +167,52 @@ def test_health_reports_if_the_file_is_readable(tmp_path: Path) -> None:
     missing = asyncio.run(YamlSourceOfTruth(tmp_path / "none.yaml").health())
     assert not missing.healthy
     assert "none.yaml" in missing.detail
+
+
+SECRET = "hunter2-SECRET"  # ruff: ignore[hardcoded-password-string]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"devices:\n{DEVICE}, password: {SECRET}}}\n",
+        f"devices:\n{DEVICE}, in_maintenance: {SECRET}}}\n",
+        f"devices: {SECRET}\n",
+    ],
+)
+def test_an_error_never_repeats_an_inventory_value(tmp_path: Path, text: str) -> None:
+    """A value in the file is not in the error text or in the health detail."""
+    sot = write(tmp_path, text)
+    with pytest.raises(InvalidInventoryError) as error:
+        asyncio.run(sot.list_devices())
+    assert SECRET not in str(error.value)
+    health = asyncio.run(sot.health())
+    assert not health.healthy
+    assert SECRET not in health.detail
+
+
+def test_a_file_that_is_not_utf8_is_not_healthy(tmp_path: Path) -> None:
+    """Bytes that are not UTF-8 make the inventory invalid."""
+    path = tmp_path / "inventory.yaml"
+    path.write_bytes(b"devices: [\xff\xfe]\n")
+    sot = YamlSourceOfTruth(path)
+    assert not asyncio.run(sot.health()).healthy
+    with pytest.raises(InvalidInventoryError, match="UTF-8"):
+        asyncio.run(sot.list_devices())
+
+
+def test_an_intended_config_that_is_not_utf8_is_invalid(tmp_path: Path) -> None:
+    """The intended config file must be UTF-8 too."""
+    (tmp_path / "r1.txt").write_bytes(b"\xff\xfe")
+    sot = write(tmp_path, f"devices:\n{DEVICE}, intended_config: r1.txt}}\n")
+    with pytest.raises(InvalidInventoryError, match=r"edge-1.*UTF-8"):
+        asyncio.run(sot.intended_config(R1))
+
+
+def test_a_file_over_the_size_limit_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The adapter refuses a file larger than the limit before it reads it."""
+    monkeypatch.setattr(yaml_file, "MAX_INVENTORY_BYTES", 10)
+    with pytest.raises(InvalidInventoryError, match="10 bytes"):
+        asyncio.run(write(tmp_path, "devices: []\n").list_devices())

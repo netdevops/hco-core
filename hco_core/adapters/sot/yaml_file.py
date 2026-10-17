@@ -1,10 +1,11 @@
 """A source of truth in one YAML file, for development and tests."""
 
 import asyncio
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 import yaml
 from pydantic import ConfigDict, Field, JsonValue, ValidationError
@@ -23,7 +24,14 @@ from hco_core.domain.ids import DeviceID
 from hco_core.domain.observability import HealthStatus
 from hco_core.domain.secrets import SecretPurpose, SecretRef
 from hco_core.engine.errors import UnknownPlatformError
-from hco_core.engine.remediation import parse
+from hco_core.engine.platforms import canonical_platform_name
+
+MAX_INVENTORY_BYTES = 10 * 1024 * 1024
+"""The largest inventory file that the adapter reads."""
+MAX_INVENTORY_DEPTH = 32
+"""The deepest nesting of mappings and lists in an inventory file."""
+_OPENS = (yaml.MappingStartEvent, yaml.SequenceStartEvent)
+_CLOSES = (yaml.MappingEndEvent, yaml.SequenceEndEvent)
 
 
 class _Entry(BaseModel):
@@ -174,8 +182,10 @@ class YamlSourceOfTruth:
             raise InvalidInventoryError(message)
         try:
             body = path.read_text(encoding="utf8")
-        except OSError as error:
-            message = f"{where}: cannot read {entry.intended_config}: {error}"
+        except (OSError, UnicodeDecodeError) as error:
+            message = (
+                f"{where}: cannot read {entry.intended_config} as UTF-8 text: {error}"
+            )
             raise InvalidInventoryError(message) from error
         return ConfigDocument(
             body=body,
@@ -192,15 +202,21 @@ def _load(path: Path) -> _Inventory:
         InvalidInventoryError: If the file is not a valid inventory.
 
     """
+    if path.stat().st_size > MAX_INVENTORY_BYTES:
+        message = f"the inventory is larger than {MAX_INVENTORY_BYTES} bytes"
+        raise InvalidInventoryError(message)
     try:
-        data = _File.model_validate(
-            yaml.safe_load(path.read_text(encoding="utf8")) or {}
-        )
+        text = path.read_text(encoding="utf8")
+        _check_structure(text)
+        data = _File.model_validate(yaml.safe_load(text) or {})
+    except UnicodeDecodeError as error:
+        message = "the inventory is not UTF-8 text"
+        raise InvalidInventoryError(message) from error
     except yaml.YAMLError as error:
         message = f"the inventory is not valid YAML: {error}"
         raise InvalidInventoryError(message) from error
     except ValidationError as error:
-        message = f"the inventory must be a mapping of devices and topology: {error}"
+        message = f"the inventory must be a mapping of devices and topology: {_problems(error)}"
         raise InvalidInventoryError(message) from error
     records: dict[DeviceID, DeviceRecord] = {}
     entries: dict[DeviceID, _Entry] = {}
@@ -212,6 +228,27 @@ def _load(path: Path) -> _Inventory:
         records[record.id] = record
         entries[record.id] = entry
     return _Inventory(records=records, entries=entries, topology=data.topology)
+
+
+def _check_structure(text: str) -> None:
+    """Refuse YAML aliases and nesting deeper than `MAX_INVENTORY_DEPTH`.
+
+    The scan stops at the first problem, so a hostile file costs little.
+
+    Raises:
+        InvalidInventoryError: For an alias or for nesting that is too deep.
+
+    """
+    depth = 0
+    events = cast("Iterator[object]", yaml.parse(text, Loader=yaml.SafeLoader))  # pyright: ignore[reportUnknownMemberType]
+    for event in events:
+        if isinstance(event, yaml.AliasEvent):
+            message = "the inventory must not use YAML anchors and aliases"
+            raise InvalidInventoryError(message)
+        depth += isinstance(event, _OPENS) - isinstance(event, _CLOSES)
+        if depth > MAX_INVENTORY_DEPTH:
+            message = f"the inventory is nested more than {MAX_INVENTORY_DEPTH} levels"
+            raise InvalidInventoryError(message)
 
 
 def _record(entry: _Entry) -> DeviceRecord:
@@ -234,14 +271,25 @@ def _record(entry: _Entry) -> DeviceRecord:
     try:
         record = DeviceRecord.model_validate({**fields, "metadata": metadata})
     except ValidationError as error:
-        message = f"device {device}: {error}"
+        message = f"device {device}: {_problems(error)}"
         raise InvalidInventoryError(message) from error
     try:
-        parse(record.platform_name, "")
+        canonical = canonical_platform_name(record.platform_name)
     except UnknownPlatformError as error:
         message = f"device {device}: unknown platform_name {record.platform_name!r}"
         raise InvalidInventoryError(message) from error
+    if canonical != record.platform_name:
+        message = f"device {device}: unknown platform_name {record.platform_name!r}; use {canonical}"
+        raise InvalidInventoryError(message)
     return record
+
+
+def _problems(error: ValidationError) -> str:
+    """Return the place and the problem of each error, never the input value."""
+    return "; ".join(
+        f"{'.'.join(map(str, problem['loc']))}: {problem['msg']}"
+        for problem in error.errors(include_input=False, include_url=False)
+    )
 
 
 def _selected(record: DeviceRecord, selector: DeviceSelector) -> bool:

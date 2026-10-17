@@ -4,10 +4,13 @@ from collections.abc import Iterable, Mapping
 from types import MappingProxyType
 from typing import Self
 
+from hier_config.models import Platform
+from hier_config.registry import get_hconfig_driver
 from pydantic import model_validator
 
 from hco_core.domain.apply import ApplyStrategy
 from hco_core.domain.base import BaseModel
+from hco_core.engine.errors import engine_errors
 
 type SectionCommands = tuple[tuple[str, tuple[str, ...]], ...]
 
@@ -172,3 +175,14 @@ PLATFORMS: Mapping[str, PlatformProfile] = MappingProxyType(
     }
 )
 """The four version 1 platforms, by `Platform` name."""
+
+
+def canonical_platform_name(name: str) -> str:
+    """Return the `Platform` name for a name in any case, or a custom name as given.
+
+    A name with no registered driver raises `UnknownPlatformError`.
+    """
+    with engine_errors():
+        get_hconfig_driver(name)
+    member = Platform.__members__.get(name.upper())
+    return member.name if member else name
