@@ -147,6 +147,26 @@ ERROR_CASES: dict[str, tuple[Callable[[], object], type[errors.EngineError]]] = 
         lambda: render_lines(IOS, {"lines": [line(1, "a"), line(1, "a")]}),
         errors.InvalidConfigError,
     ),
+    "text nested too deep": (
+        lambda: parse(IOS, "".join(" " * i + f"l{i}\n" for i in range(1001))),
+        errors.InvalidConfigError,
+    ),
+    "empty line text": (
+        lambda: render_lines(IOS, {"lines": [line(1, "")]}),
+        errors.InvalidConfigError,
+    ),
+    "depth zero line": (
+        lambda: render_lines(IOS, {"lines": [line(0, "a")]}),
+        errors.InvalidConfigError,
+    ),
+    "first line below the top level": (
+        lambda: render_lines(IOS, {"lines": [line(3, "a")]}),
+        errors.InvalidConfigError,
+    ),
+    "depth skips a level": (
+        lambda: render_lines(IOS, {"lines": [line(1, "a"), line(3, "b")]}),
+        errors.InvalidConfigError,
+    ),
     "malformed tag rule": (
         lambda: build_bundle(IOS, OLD, NEW, tag_rules=({"apply_tags": 1},)),
         errors.InvalidConfigError,

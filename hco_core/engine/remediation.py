@@ -15,7 +15,7 @@ from hco_core.domain.remediation import (
     NegationFact,
     RemediationBundle,
 )
-from hco_core.engine.errors import engine_errors
+from hco_core.engine.errors import InvalidConfigError, engine_errors
 
 
 def parse(platform_name: str, text: str) -> DumpJson:
@@ -63,8 +63,26 @@ def build_bundle(  # ruff: ignore[too-many-arguments]
         )
 
 
+def validated_dump(dump: Mapping[str, object]) -> Dump:
+    """Return the dump if its depths describe one tree.
+
+    Raises:
+        InvalidConfigError: If the first depth is not 1, or a depth grows by more
+            than one level.
+
+    """
+    checked = Dump.model_validate(dump)
+    parent_depth = 0
+    for line in checked.lines:
+        if not 1 <= line.depth <= parent_depth + 1:
+            message = f"line {line.text!r} has depth {line.depth} after {parent_depth}"
+            raise InvalidConfigError(message)
+        parent_depth = line.depth
+    return checked
+
+
 def _load(platform_name: str, dump: Mapping[str, object]) -> HConfig:
-    return HConfig.from_dump(platform_name, Dump.model_validate(dump))
+    return HConfig.from_dump(platform_name, validated_dump(dump))
 
 
 def _dump_json(config: HConfig) -> DumpJson:

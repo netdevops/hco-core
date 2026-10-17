@@ -3,56 +3,42 @@
 import hashlib
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass, field
 
-from hier_config.models import Dump, DumpLine
+from hier_config.models import DumpLine
 
 from hco_core.engine.errors import engine_errors
+from hco_core.engine.remediation import validated_dump
 
-
-@dataclass
-class _Node:
-    line: DumpLine
-    children: list["_Node"] = field(default_factory=list["_Node"])
-
-    def canonical(self) -> str:
-        """Return this subtree as compact JSON with siblings in a fixed order."""
-        line = json.dumps(
-            [
-                self.line.text,
-                sorted(self.line.tags),
-                sorted(self.line.comments),
-                self.line.new_in_config,
-            ],
-            separators=(",", ":"),
-        )
-        children = ",".join(sorted(child.canonical() for child in self.children))
-        return f"[{line},[{children}]]"
+type _OpenSection = tuple[DumpLine | None, list[str]]
 
 
 def change_fingerprint(dump: Mapping[str, object]) -> str:
     """Return the sha256 hex digest of the canonical Dump JSON.
 
-    Sibling order does not change the digest, so two devices that need the
-    same change share one fingerprint. A malformed dump raises
-    `InvalidConfigError`.
+    Sibling order and the comments that `hier_config` writes do not change the
+    digest, so two devices that need the same change share one fingerprint.
+    A malformed dump raises `InvalidConfigError`.
     """
     with engine_errors():
-        lines = Dump.model_validate(dump).lines
-    root = _Node(
-        DumpLine(
-            depth=0,
-            text="",
-            tags=frozenset(),
-            comments=frozenset(),
-            new_in_config=False,
-        )
-    )
-    sections = [root]
+        lines = validated_dump(dump).lines
+    sections: list[_OpenSection] = [(None, [])]
     for line in lines:
-        while sections[-1].line.depth >= line.depth:
-            sections.pop()
-        node = _Node(line)
-        sections[-1].children.append(node)
-        sections.append(node)
-    return hashlib.sha256(root.canonical().encode()).hexdigest()
+        while len(sections) > line.depth:
+            _close(sections)
+        sections.append((line, []))
+    while len(sections) > 1:
+        _close(sections)
+    _, roots = sections[0]
+    return hashlib.sha256(_join(roots).encode()).hexdigest()
+
+
+def _close(sections: list[_OpenSection]) -> None:
+    line, children = sections.pop()
+    if line is not None:
+        fields = [line.text, sorted(line.tags), line.new_in_config]
+        text = json.dumps(fields, separators=(",", ":"))
+        sections[-1][1].append(f"[{text},{_join(children)}]")
+
+
+def _join(subtrees: list[str]) -> str:
+    return f"[{','.join(sorted(subtrees))}]"

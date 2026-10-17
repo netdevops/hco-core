@@ -30,7 +30,7 @@ def engine_errors() -> Generator[None]:
     Raises:
         UnknownPlatformError: For a `DriverNotFoundError`.
         DriverMismatchError: For an `IncompatibleDriverError`.
-        InvalidConfigError: For any other `hier_config` or schema error.
+        InvalidConfigError: For any other `hier_config`, schema, depth, or value error.
 
     """
     try:
@@ -39,5 +39,5 @@ def engine_errors() -> Generator[None]:
         raise UnknownPlatformError(str(error)) from error
     except IncompatibleDriverError as error:
         raise DriverMismatchError(str(error)) from error
-    except (HierConfigError, ValidationError) as error:
+    except (HierConfigError, ValidationError, RecursionError, ValueError) as error:
         raise InvalidConfigError(str(error)) from error
