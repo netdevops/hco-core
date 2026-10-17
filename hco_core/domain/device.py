@@ -1,8 +1,9 @@
 """Devices, inventory pages, and topology."""
 
 from collections.abc import Mapping
-from types import MappingProxyType
 from typing import Literal
+
+from pydantic import Field
 
 from hco_core.domain.base import BaseModel
 from hco_core.domain.config import ConfigFormat
@@ -35,7 +36,7 @@ class DeviceRecord(BaseModel):
     tags: frozenset[str] = frozenset()
     config_format: ConfigFormat = ConfigFormat.CLI
     in_maintenance: bool = False
-    metadata: Mapping[str, str] = MappingProxyType({})
+    metadata: Mapping[str, str] = Field(default_factory=dict)
 
 
 class DeviceSelector(BaseModel):
@@ -84,7 +85,7 @@ class TopologyGraph(BaseModel):
 
     nodes: tuple[DeviceID, ...]
     edges: tuple[TopologyEdge, ...] = ()
-    redundancy_groups: Mapping[str, tuple[DeviceID, ...]] = MappingProxyType({})
+    redundancy_groups: Mapping[str, tuple[DeviceID, ...]] = Field(default_factory=dict)
 
     def neighbors(self, device: DeviceID) -> tuple[DeviceID, ...]:
         """Every device directly linked to this one."""
