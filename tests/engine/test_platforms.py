@@ -151,3 +151,11 @@ def test_canonical_platform_name_gives_a_custom_name_in_upper_case() -> None:
             assert canonical_platform_name(name) == "HCO_TEST_CUSTOM"
     finally:
         unregister_driver("HCO_TEST_CUSTOM")
+
+
+@pytest.mark.parametrize("platform", list(Platform))
+def test_canonical_platform_name_gives_the_name_of_a_platform_member(
+    platform: Platform,
+) -> None:
+    """A `Platform` member gives its name, never its positional value."""
+    assert canonical_platform_name(platform) == platform.name
