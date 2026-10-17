@@ -1,9 +1,15 @@
 """The initial migration makes the schema of docs/spec/03 (AC-12)."""
 
 import pytest
-from sqlalchemy import Engine, inspect, text
+from alembic.autogenerate import compare_metadata
+from alembic.migration import MigrationContext
+from pydantic import SecretStr
+from sqlalchemy import Engine, create_engine, inspect, text
 from sqlalchemy.dialects.postgresql import TIMESTAMP
 
+from hco_core.db.migrate import downgrade, upgrade
+from hco_core.db.models import Base
+from hco_core.settings import CoreSettings
 from tests.db.conftest import TABLES
 
 SECRET_NAMES = ("password", "secret", "token", "key")
@@ -68,3 +74,41 @@ def test_the_unique_constraints_exist(
     constraints = inspect(engine).get_unique_constraints(table, "hco")
 
     assert columns in [constraint["column_names"] for constraint in constraints]
+
+
+def test_upgrade_downgrade_upgrade(engine: Engine, database_url: str) -> None:
+    """The chain goes down to base and up to head again (AC-12)."""
+    settings = CoreSettings(database_url=SecretStr(database_url))
+
+    downgrade(settings, "base")
+    assert set(TABLES).isdisjoint(inspect(engine).get_table_names(schema="hco"))
+    with engine.connect() as connection:
+        functions = connection.scalar(
+            text("SELECT count(*) FROM pg_proc WHERE proname = 'reject_self_approval'")
+        )
+    assert functions == 0
+
+    upgrade(settings)
+    assert set(TABLES) <= set(inspect(engine).get_table_names(schema="hco"))
+
+
+def test_the_models_match_the_migration(database_url: str) -> None:
+    """The ORM models and the migrated schema have no difference.
+
+    The user `hco` puts schema `hco` first in the search path, and reflection
+    then names it the default schema. This engine starts in schema `public`.
+    """
+    public_engine = create_engine(
+        database_url, connect_args={"options": "-c search_path=public"}
+    )
+    try:
+        with public_engine.connect() as connection:
+            context = MigrationContext.configure(
+                connection,
+                opts={"include_schemas": True, "version_table_schema": "hco"},
+            )
+            differences = compare_metadata(context, Base.metadata)
+    finally:
+        public_engine.dispose()
+
+    assert differences == []
