@@ -240,3 +240,55 @@ def test_bad_input_raises_engine_errors() -> None:
     unknown = bundle.model_copy(update={"platform_name": "HCO_TEST_NO_DRIVER"})
     with pytest.raises(UnknownPlatformError):
         config_derived(unknown, running_dump, device)
+
+
+GATEWAY = "interface Vlan1\n ip address 10.0.0.1 255.255.255.0\n"
+
+
+@pytest.mark.parametrize(
+    ("running", "intended"),
+    [
+        ("", "ip default-gateway 10.0.0.254\n"),
+        ("ip default-gateway 10.0.0.254\n", ""),
+        ("ip default-gateway 10.0.0.254\n", "ip default-gateway 10.0.0.253\n"),
+    ],
+)
+def test_an_ios_default_gateway_change_touches_the_mgmt_path(
+    running: str, intended: str
+) -> None:
+    """The view's default gateway is part of the path HCO uses."""
+    facts = derive(IOS, GATEWAY + running, GATEWAY + intended, "10.0.0.9")
+    assert facts.touches_mgmt_path
+
+
+def test_an_unchanged_default_gateway_does_not_touch_the_mgmt_path() -> None:
+    """A change elsewhere leaves the default gateway alone."""
+    running = f"{GATEWAY}ip default-gateway 10.0.0.254\n"
+    assert not derive(IOS, running, f"{running}ip routing\n").touches_mgmt_path
+
+
+@pytest.mark.parametrize(
+    ("platform_name", "route"),
+    [
+        (IOS, "ip route vrf MGMT 0.0.0.0 0.0.0.0 192.0.2.1\n"),
+        ("ARISTA_EOS", "ip route vrf MGMT 0.0.0.0/0 192.0.2.1\n"),
+        (UNUSED_ACL_PLATFORM, "ip route 0.0.0.0 0.0.0.0 192.0.2.1\n"),
+    ],
+)
+@pytest.mark.usefixtures("unused_acl_platform")
+def test_known_limits_of_the_default_route_check(
+    platform_name: str, route: str
+) -> None:
+    """A VRF default route, or a platform outside the table, is not found."""
+    assert not derive(platform_name, "", route).touches_mgmt_path
+
+
+def test_a_deep_default_route_is_found() -> None:
+    """A default route at the end of a deep lineage still matches."""
+    chain = "".join(f"{' ' * depth}level {depth}\n" for depth in range(300))
+    route = f"{chain}{' ' * 299} router static\n{' ' * 300} address-family ipv4 unicast"
+    deep = f"{route}\n{' ' * 301} 0.0.0.0/0 192.0.2.1\n"
+    assert derive("CISCO_XR", chain, deep).touches_mgmt_path
+    assert not derive(
+        "CISCO_XR", chain, deep.replace("0.0.0.0/0", "10.9.0.0/16")
+    ).touches_mgmt_path

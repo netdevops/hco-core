@@ -69,6 +69,15 @@ def test_commands_for_adds_the_commands_of_each_section(platform_name: str) -> N
     assert len(commands) > len(profile.baseline_commands)
 
 
+def test_commands_for_a_negated_section_adds_its_commands() -> None:
+    """A removed ACL adds the ACL command, after the baseline."""
+    profile = PLATFORMS["CISCO_IOS"]
+    assert profile.commands_for(("no ip access-list extended OLD",)) == (
+        *profile.baseline_commands,
+        "show access-lists",
+    )
+
+
 def test_commands_for_no_section_is_the_baseline() -> None:
     """A section without commands adds nothing, and a prefix must end at a word."""
     profile = PLATFORMS["CISCO_IOS"]
@@ -87,6 +96,12 @@ def test_commands_for_no_section_is_the_baseline() -> None:
         "show running-config | redirect flash:x",
         "show running-config | include a | tee flash:x",
         "show running-config > bootflash:x",
+        "show clock\nreload",
+        "show clock\rreload",
+        "show clock ; reload",
+        "show running-config | include x\nwrite erase",
+        "show clock\x00",
+        "show cl\u00f6ck",
     ],
 )
 def test_profile_refuses_a_write_command(command: str) -> None:

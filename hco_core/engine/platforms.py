@@ -15,11 +15,22 @@ _OUTPUT_FILTERS = ("include ", "exclude ", "begin ", "section ")
 """The only verbs permitted after a pipe. Others, such as `redirect`, write files."""
 
 
+def _is_read_only(command: str) -> bool:
+    show, *filters = command.split("|")
+    plain = command.isascii() and command.isprintable()
+    return (
+        plain
+        and not {";", ">"} & set(command)
+        and show.startswith("show ")
+        and all(part.strip().startswith(_OUTPUT_FILTERS) for part in filters)
+    )
+
+
 class PlatformProfile(BaseModel):
     """What HCO may send to one platform, and how it applies a change.
 
-    Every command must start with `show `, with no `>` and only output filters
-    after a pipe. The model refuses any other command, because a collection
+    Every command must be printable ASCII and start with `show `, with no `;`,
+    no `>`, and only output filters after a pipe. The model refuses any other command, because a collection
     command must never change the device.
     """
 
@@ -41,12 +52,7 @@ class PlatformProfile(BaseModel):
             command for _, commands in self.section_commands for command in commands
         )
         for command in (self.fingerprint_command, *self.baseline_commands, *sections):
-            show, *filters = command.split("|")
-            if (
-                not show.startswith("show ")
-                or ">" in command
-                or not all(part.strip().startswith(_OUTPUT_FILTERS) for part in filters)
-            ):
+            if not _is_read_only(command):
                 message = f"{command!r} is not a read-only show command"
                 raise ValueError(message)
         return self

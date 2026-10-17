@@ -27,7 +27,7 @@ def parse(platform_name: str, text: str) -> DumpJson:
 def render_lines(platform_name: str, dump: Mapping[str, object]) -> tuple[str, ...]:
     """Render Dump JSON as indented config lines."""
     with engine_errors():
-        return _load(platform_name, dump).to_lines()
+        return load_dump(platform_name, dump).to_lines()
 
 
 def build_bundle(  # ruff: ignore[too-many-arguments]
@@ -44,8 +44,8 @@ def build_bundle(  # ruff: ignore[too-many-arguments]
     Pass `intended_platform_name` when the intended config uses another platform.
     """
     with engine_errors():
-        running = _load(platform_name, running_dump)
-        intended = _load(intended_platform_name or platform_name, intended_dump)
+        running = load_dump(platform_name, running_dump)
+        intended = load_dump(intended_platform_name or platform_name, intended_dump)
         rules = tuple(TagRule.model_validate(rule) for rule in tag_rules)
         workflow = WorkflowRemediation(running, intended, plugins=tuple(plugins))
         workflow.apply_remediation_tag_rules(rules)
@@ -82,7 +82,8 @@ def validated_dump(dump: Mapping[str, object]) -> Dump:
     return checked
 
 
-def _load(platform_name: str, dump: Mapping[str, object]) -> HConfig:
+def load_dump(platform_name: str, dump: Mapping[str, object]) -> HConfig:
+    """Return the config tree of a checked dump. Call it inside `engine_errors()`."""
     return HConfig.from_dump(platform_name, validated_dump(dump))
 
 

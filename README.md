@@ -163,18 +163,20 @@ assert "show interfaces status" in profile.commands_for(facts.top_level_sections
 ```
 
 - `touches_mgmt_path` is true when the change touches the interface that holds
-  the management address, or a line that starts with one of the
-  `default_route_prefixes` of the platform.
+  the management address, when the default gateway of the view changes, or
+  when a line starts with one of the `default_route_prefixes` of the platform.
 - The management address must be an IPv4 address. A host name or an IPv6
   address matches no interface.
 - On `CISCO_IOS`, the `hier_config` view reads `ip default-gateway` only. The
-  default route prefixes find `ip route 0.0.0.0 0.0.0.0`. They do not find a
-  default route in a VRF on `CISCO_IOS`, such as `ip route vrf MGMT 0.0.0.0 0.0.0.0`.
+  default route prefixes find `ip route 0.0.0.0 0.0.0.0`.
+- The prefixes do not find a default route in a VRF on `CISCO_IOS` or
+  `ARISTA_EOS`, such as `ip route vrf MGMT 0.0.0.0/0`.
+- A platform outside `PLATFORMS` has no default route prefixes.
 - In `hier_config` 4.0.0b4, the four built-in drivers have no unused-object
   rules. So `unused_objects_before`, `unused_objects_after`, and
   `unused_objects_created` are empty for these platforms.
-- Every command in the platform table is a `show` command. A profile refuses
-  any other command, and any output redirection.
+- Every command in the platform table is a `show` command in printable ASCII.
+  A profile refuses any other command, `;`, and any output redirection.
 
 ## Requirements
 
