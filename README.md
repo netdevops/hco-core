@@ -3,8 +3,8 @@
 **Ports and domain models for building network configuration orchestration on
 [`hier_config`](https://github.com/netdevops/hier_config).**
 
-Nothing here talks to a network, a database, or a language model. These are
-contracts: nine protocols and the vocabulary they speak, so that
+The ports and the domain models talk to no network, database, or language
+model. They are contracts: nine protocols and the vocabulary they speak, so that
 source-of-truth adapters, device drivers, secret stores, vector stores, and risk
 analysers can be written by anyone.
 
@@ -355,14 +355,55 @@ for each command, such as `show_version.txt`.
 - `apply()` verifies the validation token, then always raises
   `DeviceWritesDisabledError`. Phase 4 adds device writes.
 
+## Database and settings
+
+`hco_core.db` holds the Postgres schema of hco-core. It has eight tables in
+schema `hco`: `device`, `config_snapshot`, `change_set`, `remediation_run`,
+`approval_request`, `approval_decision`, `audit_event`, and
+`notification_delivery`.
+
+- Each table has a ULID key, `created_at`, `updated_at`, and a `tenant_id`.
+  `tenant_id` stays empty in version 1.
+- `PlatformName` stores a platform by its name, such as `CISCO_IOS`. It never
+  stores the positional `Platform` value.
+- A trigger refuses a decision by the person who requested the change, also on
+  a direct `INSERT` or `UPDATE`.
+- `UNIQUE (request_id, actor)` permits one decision for each person.
+  `UNIQUE (run_id, channel, purpose)` permits one notification for each
+  purpose.
+
+Upgrade the schema with `hco_core.db.migrate.upgrade(CoreSettings())`. The
+Alembic version table is `hco.alembic_version`.
+
+`CoreSettings` reads these environment variables. `.env.example` shows each
+one with its default.
+
+| Variable | Default |
+|---|---|
+| `HCO_DATABASE_URL` | `postgresql+psycopg://hco:hco@localhost:5432/hco` |
+| `HCO_LOG_LEVEL` | `INFO` |
+| `HCO_LOG_FORMAT` | `json` (or `console`) |
+| `HCO_SOT` | `yaml` |
+| `HCO_SOT_PATH` | `inventory.yaml` |
+| `HCO_CONNECTION` | `mock` |
+| `HCO_TRANSCRIPTS_DIR` | `transcripts` |
+| `HCO_API_URL` | `http://localhost:8080` |
+| `HCO_ACTOR` | not set |
+| `HCO_VALIDATION_KEY` | not set |
+
+- A `postgresql://` URL gets the psycopg dialect, `postgresql+psycopg://`.
+- `HCO_DATABASE_URL` and `HCO_VALIDATION_KEY` are secret. A printed settings
+  object and a settings error do not show them.
+- `hco_core.logging.configure_logging(settings)` sends structlog and
+  standard-library log lines to stdout, as JSON or for a console.
+
 ## Requirements
 
 Python 3.12 to 3.14.
 
-This release depends on `pydantic`, `hier-config`, and `pyyaml`. Phase 1 adds
-the remediation engine, the database, the review graph, the REST API, and the
-CLI.
-These parts add runtime dependencies, so the list grows in each Phase 1 release.
+Postgres 16 for the database. Phase 1 adds the review graph, the REST API, and
+the CLI. These parts add runtime dependencies, so the list grows in each Phase 1
+release.
 Read `pyproject.toml` for the current list.
 
 ## Development
@@ -372,6 +413,17 @@ Install the package and the development tools:
 ```bash
 poetry install
 ```
+
+The database tests need Postgres. Start a test container on port 55432:
+
+```bash
+docker run -d --name hco-core-test-pg -e POSTGRES_USER=hco \
+  -e POSTGRES_PASSWORD=hco -e POSTGRES_DB=hco \
+  -p 127.0.0.1:55432:5432 pgvector/pgvector:pg16
+export HCO_DATABASE_URL=postgresql://hco:hco@127.0.0.1:55432/hco
+```
+
+If Postgres is not available, the database tests fail. They do not skip.
 
 Run the gate before you open a pull request. CI runs the same commands:
 

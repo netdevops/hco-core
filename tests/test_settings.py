@@ -134,3 +134,14 @@ def test_printed_settings_hold_no_password_and_no_validation_key(
     for text in (repr(settings), str(settings), settings.model_dump_json()):
         assert URL_MARKER not in text
         assert VALIDATION_KEY not in text
+
+
+def test_an_empty_variable_counts_as_not_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The empty lines of `.env.example` give the defaults."""
+    monkeypatch.setenv("HCO_ACTOR", "")
+    monkeypatch.setenv("HCO_VALIDATION_KEY", "")
+
+    settings = CoreSettings()
+
+    assert settings.actor is None
+    assert settings.validation_key is None

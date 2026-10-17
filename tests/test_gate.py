@@ -6,6 +6,8 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+from hco_core.settings import CoreSettings
+
 ROOT = Path(__file__).resolve().parent.parent
 CHANGE_TYPES = {
     "added",
@@ -54,3 +56,17 @@ def test_ci_holds_the_validation_gate_at_full_branch_coverage() -> None:
         "pytest -q tests/engine/test_validation.py --cov=hco_core.engine.validation"
         " --cov-branch --cov-report=term-missing --cov-fail-under=100"
     ) in workflow
+
+
+def test_ci_gives_the_tests_a_postgres_service() -> None:
+    """The database tests fail without Postgres, so CI must start one."""
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf8")
+    assert "image: pgvector/pgvector:pg16" in workflow
+    assert "HCO_DATABASE_URL: postgresql://hco:hco@localhost:5432/hco" in workflow
+
+
+def test_env_example_names_every_core_setting() -> None:
+    """A contributor finds each `HCO_` variable in `.env.example`."""
+    example = (ROOT / ".env.example").read_text(encoding="utf8")
+    for name in CoreSettings.model_fields:
+        assert f"HCO_{name.upper()}=" in example
