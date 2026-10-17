@@ -115,6 +115,27 @@ remediation engine, the database, the review graph, the REST API, and the CLI.
 These parts add runtime dependencies, so the list grows in each Phase 1 release.
 Read `pyproject.toml` for the current list.
 
+## Development
+
+Install the package and the development tools:
+
+```bash
+poetry install
+```
+
+Run the gate before you open a pull request. CI runs the same commands:
+
+```bash
+poetry run ruff format --check .
+poetry run ruff check .
+poetry run mypy hco_core
+poetry run pyright
+poetry run pytest --cov=hco_core
+```
+
+Add a changelog fragment in `changes/`. The rules are in
+[`changes/README.md`](changes/README.md).
+
 ## Licence
 
 Apache-2.0. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
