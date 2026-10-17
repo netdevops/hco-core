@@ -150,7 +150,6 @@ device = DeviceRecord(
     name="r1",
     platform_name="CISCO_IOS",
     mgmt_address="10.0.0.1",
-    metadata={},
 )
 
 facts = config_derived(bundle, running, device)
@@ -189,6 +188,10 @@ assert "show interfaces status" in profile.commands_for(facts.top_level_sections
   starts with it.
 - These are not found: an IPv6 default route, a default route that a routing
   protocol supplies, and a route that leaks from one VRF to another.
+- A change that removes `address-family ipv4` from the management VRF
+  definition, such as under `vrf definition MGMT` on `CISCO_IOS`, cuts the
+  management path. This change is not found: `touches_mgmt_path` is false and
+  `default_routes_touched` is empty.
 - A platform outside `PLATFORMS` has no default route prefixes.
 - `config_derived()` needs a `hier_config` view. Only `ARISTA_EOS`,
   `ARUBA_AOSCX`, `CISCO_IOS`, `CISCO_NXOS`, `CISCO_XR`, and `HP_PROCURVE` have
