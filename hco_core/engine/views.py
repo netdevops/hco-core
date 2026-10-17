@@ -5,8 +5,8 @@ The facts carry no risk judgement. The caller decides what each fact means.
 
 import re
 from collections.abc import Iterable, Mapping
+from functools import cache
 from ipaddress import IPv4Address, ip_interface
-from itertools import islice
 
 from hier_config import HConfig, HConfigChild
 from hier_config.constructors import get_hconfig_view
@@ -22,10 +22,9 @@ from hco_core.engine.errors import engine_errors
 from hco_core.engine.platforms import PLATFORMS
 from hco_core.engine.remediation import load_dump
 
-type _Route = tuple[str, str | None]
-
-_INLINE_VRF = re.compile(r"^(ip route) vrf (\S+) ")
-_VRF_SECTION = re.compile(r"^vrf (?:context )?(\S+)$")
+_VRF_PLACEHOLDER = "{vrf}"
+_VRF_NAME_CHARACTERS = 128
+"""The longest VRF name that a parent line can hold and still match."""
 _INTERFACE_VRF = re.compile(r"^(?:ip )?vrf (?:forwarding |member )?(\S+)$")
 
 
@@ -86,7 +85,7 @@ def config_derived(
                 mgmt_vrf is None
                 and views[0].ipv4_default_gw != views[1].ipv4_default_gw
             )
-            or any(route.vrf == mgmt_vrf or mgmt is None for route in routes),
+            or any(mgmt_vrf in {None, route.vrf} for route in routes),
         )
 
 
@@ -155,58 +154,55 @@ def _default_routes_touched(
     in_remediation, in_running, in_future = (
         _default_routes(config, prefixes) for config in configs
     )
-    facts = {(vrf, negated) for (_, vrf), negated in in_remediation.items()}
-    facts |= {(vrf, True) for _, vrf in in_running.keys() - in_future.keys()}
-    facts |= {(vrf, False) for _, vrf in in_future.keys() - in_running.keys()}
+    facts = {(text, vrf, negated) for (text, vrf), negated in in_remediation.items()}
+    facts |= {(*route, True) for route in in_running.keys() - in_future.keys()}
+    facts |= {(*route, False) for route in in_future.keys() - in_running.keys()}
     return tuple(
-        DefaultRouteFact(vrf=vrf, negated=negated)
-        for vrf, negated in sorted(facts, key=lambda fact: (fact[0] or "", fact[1]))
+        DefaultRouteFact(text=text, vrf=vrf, negated=negated)
+        for text, vrf, negated in sorted(facts, key=lambda f: (f[1] or "", f[0], f[2]))
     )
 
 
-def _default_routes(config: HConfig, prefixes: tuple[str, ...]) -> dict[_Route, bool]:
-    """Return each default route by its path and VRF, and if the line is negated.
+@cache
+def _patterns(prefixes: tuple[str, ...]) -> tuple[re.Pattern[str], ...]:
+    """Return a pattern for each prefix, with `{vrf}` as the `vrf` group."""
+    placeholder = re.escape(_VRF_PLACEHOLDER)
+    return tuple(
+        re.compile(re.escape(prefix).replace(placeholder, r"(?P<vrf>\S+)"))
+        for prefix in prefixes
+    )
 
-    A match starts at a line or a parent and joins texts down to the line. The
-    joined parent texts stop at the length of the longest prefix, so the work
-    is linear. The VRF is an inline `ip route vrf <name>` or the nearest
-    `vrf <name>` or `vrf context <name>` parent.
+
+def _default_routes(
+    config: HConfig, prefixes: tuple[str, ...]
+) -> dict[tuple[str, str | None], bool]:
+    """Return each default route by its text and VRF, and if the line is negated.
+
+    A match joins the texts of some parents and the line. The longest match
+    wins, so a VRF form beats the global form. The parents are cut to the
+    width of the longest prefix and limited to its word count, so the work is
+    linear.
     """
     if not prefixes:
         return {}
+    patterns = _patterns(prefixes)
     negation = config.driver.negation_prefix
-    longest = max(map(len, prefixes))
+    most_parents = max(prefix.count(" ") for prefix in prefixes)
+    width = max(map(len, prefixes)) + _VRF_NAME_CHARACTERS
     open_texts: list[str] = []
-    open_vrfs: list[str | None] = [None]
-    found: dict[_Route, bool] = {}
+    found: dict[tuple[str, str | None], bool] = {}
     for line in config.all_children():
         del open_texts[line.depth - 1 :]
-        del open_vrfs[line.depth :]
         text = line.text.removeprefix(negation)
-        inline = _INLINE_VRF.match(text)
-        if inline:
-            text = f"{inline[1]} {text[inline.end() :]}"
-        section = _VRF_SECTION.match(text)
-        vrf = inline[2] if inline else open_vrfs[-1]
-        open_vrfs.append(section[1] if section else vrf)
-        open_texts.append(text)
-        if _ends_a_match(open_texts, prefixes, longest):
-            path = "\n".join(open_texts)
-            found[path, vrf] = line.text.startswith(negation)
+        parents = open_texts[-most_parents:] if most_parents else []
+        open_texts.append(text[:width])
+        match = None
+        for start in range(len(parents) + 1):
+            joined = " ".join((*parents[start:], text))
+            match = next(filter(None, (p.match(joined) for p in patterns)), None)
+            if match:
+                break
+        if match:
+            vrf = match.groupdict().get("vrf")
+            found[match.string, vrf] = line.text.startswith(negation)
     return found
-
-
-def _ends_a_match(
-    open_texts: list[str], prefixes: tuple[str, ...], longest: int
-) -> bool:
-    """Return True if a prefix matches the last text joined to some of its parents."""
-    joined = open_texts[-1][:longest]
-    parents = ""
-    for text in islice(reversed(open_texts), 1, None):
-        if joined.startswith(prefixes):
-            return True
-        if len(parents) >= longest:
-            return False
-        parents = f"{text} {parents}"
-        joined = f"{text} {joined}"
-    return joined.startswith(prefixes)

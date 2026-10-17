@@ -1,0 +1,1 @@
+Changed touches_mgmt_path so that it reads the management VRF. A default route in another VRF does not touch the management path when the VRF is known.

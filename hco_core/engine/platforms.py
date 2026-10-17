@@ -46,7 +46,8 @@ class PlatformProfile(BaseModel):
     """Prefixes of an IPv4 default route, matched against a line and its parents.
 
     `hco_core.engine.views` joins the texts from a parent down to the line, so
-    a prefix can include the parent line of a nested route.
+    a prefix can include the parent line of a nested route. `{vrf}` stands for
+    one VRF name.
     """
 
     @model_validator(mode="after")
@@ -98,7 +99,10 @@ PLATFORMS: Mapping[str, PlatformProfile] = MappingProxyType(
                 ("ip route", ("show ip route static",)),
                 ("vlan", ("show vlan brief",)),
             ),
-            default_route_prefixes=("ip route 0.0.0.0 0.0.0.0",),
+            default_route_prefixes=(
+                "ip route 0.0.0.0 0.0.0.0",
+                "ip route vrf {vrf} 0.0.0.0 0.0.0.0",
+            ),
         ),
         "CISCO_NXOS": PlatformProfile(
             strategy=ApplyStrategy.NXOS_CHECKPOINT,
@@ -117,7 +121,10 @@ PLATFORMS: Mapping[str, PlatformProfile] = MappingProxyType(
                 ("ip route", ("show ip route static",)),
                 ("vlan", ("show vlan brief",)),
             ),
-            default_route_prefixes=("ip route 0.0.0.0/0",),
+            default_route_prefixes=(
+                "ip route 0.0.0.0/0",
+                "vrf context {vrf} ip route 0.0.0.0/0",
+            ),
         ),
         "CISCO_XR": PlatformProfile(
             strategy=ApplyStrategy.IOSXR_COMMIT_CONFIRMED,
@@ -135,7 +142,10 @@ PLATFORMS: Mapping[str, PlatformProfile] = MappingProxyType(
                 ("ipv4 access-list", ("show access-lists ipv4",)),
                 ("router static", ("show route static",)),
             ),
-            default_route_prefixes=("address-family ipv4 unicast 0.0.0.0/0",),
+            default_route_prefixes=(
+                "router static address-family ipv4 unicast 0.0.0.0/0",
+                "router static vrf {vrf} address-family ipv4 unicast 0.0.0.0/0",
+            ),
         ),
         "ARISTA_EOS": PlatformProfile(
             strategy=ApplyStrategy.EOS_SESSION_COMMIT_TIMER,
@@ -154,7 +164,10 @@ PLATFORMS: Mapping[str, PlatformProfile] = MappingProxyType(
                 ("ip route", ("show ip route static",)),
                 ("vlan", ("show vlan brief",)),
             ),
-            default_route_prefixes=("ip route 0.0.0.0/0",),
+            default_route_prefixes=(
+                "ip route 0.0.0.0/0",
+                "ip route vrf {vrf} 0.0.0.0/0",
+            ),
         ),
     }
 )

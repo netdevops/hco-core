@@ -9,10 +9,13 @@ from hco_core.engine.platforms import PLATFORMS, PlatformProfile
 V1_PLATFORMS = ("CISCO_IOS", "CISCO_NXOS", "CISCO_XR", "ARISTA_EOS")
 WRITE_PREFIXES = ("configure", "write", "reload", "copy", "clear", "delete")
 DEFAULT_ROUTE_PREFIXES = {
-    "CISCO_IOS": ("ip route 0.0.0.0 0.0.0.0",),
-    "CISCO_NXOS": ("ip route 0.0.0.0/0",),
-    "CISCO_XR": ("address-family ipv4 unicast 0.0.0.0/0",),
-    "ARISTA_EOS": ("ip route 0.0.0.0/0",),
+    "CISCO_IOS": ("ip route 0.0.0.0 0.0.0.0", "ip route vrf {vrf} 0.0.0.0 0.0.0.0"),
+    "CISCO_NXOS": ("ip route 0.0.0.0/0", "vrf context {vrf} ip route 0.0.0.0/0"),
+    "CISCO_XR": (
+        "router static address-family ipv4 unicast 0.0.0.0/0",
+        "router static vrf {vrf} address-family ipv4 unicast 0.0.0.0/0",
+    ),
+    "ARISTA_EOS": ("ip route 0.0.0.0/0", "ip route vrf {vrf} 0.0.0.0/0"),
 }
 SECTIONS = ("interface Gi1", "no ip access-list extended OLD", "router bgp 65000")
 

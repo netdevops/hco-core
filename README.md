@@ -167,17 +167,20 @@ assert "show interfaces status" in profile.commands_for(facts.top_level_sections
   address. `mgmt_vrf` is its VRF. It is `None` for the global table, or when
   no interface holds the address.
 - `default_routes_touched` lists each IPv4 default route that the change adds
-  or removes, with its VRF. The global and the VRF forms are found on all four
-  platforms, for example `ip route vrf MGMT 0.0.0.0/0` on `ARISTA_EOS`.
+  or removes, with its text and its VRF. The `default_route_prefixes` of each
+  platform hold the global and the VRF forms, such as
+  `ip route vrf {vrf} 0.0.0.0/0` on `ARISTA_EOS`. The longest match wins.
 - `touches_mgmt_path` is true when the change touches `mgmt_interface`, or a
-  default route in `mgmt_vrf`. Without `mgmt_interface`, any default route
-  counts. A change of the default gateway of the view counts only when
-  `mgmt_vrf` is `None`.
+  default route in `mgmt_vrf`. When `mgmt_vrf` is `None`, any default route
+  counts, and a change of the default gateway of the view counts.
 - The management address must be an IPv4 address. A host name or an IPv6
   address matches no interface.
-- On `CISCO_IOS`, the `hier_config` view reads `ip default-gateway` only, and
-  it gives no VRF for `vrf forwarding MGMT`. HCO reads the route lines and the
-  `vrf` child line of the interface instead.
+- On `CISCO_IOS`, the `hier_config` view gives an empty VRF for
+  `vrf forwarding MGMT`. So `mgmt_vrf` comes from the `vrf forwarding`,
+  `ip vrf forwarding`, `vrf member`, or `vrf` child line of the interface.
+- `ipv4_default_gw` of the view is not used to find default routes. The route
+  lines are. On `CISCO_IOS`, the view reads `ip default-gateway` only.
+- A VRF name in a parent line is cut after 128 characters.
 - These are not found: an IPv6 default route, a default route that a routing
   protocol supplies, and a route that leaks from one VRF to another.
 - A platform outside `PLATFORMS` has no default route prefixes.

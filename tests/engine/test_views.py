@@ -50,6 +50,11 @@ def derive(
     return config_derived(bundle, running_dump, device)
 
 
+def routes(facts: ConfigDerived) -> list[tuple[str | None, bool]]:
+    """Return the VRF and the negation of each default route touched."""
+    return [(route.vrf, route.negated) for route in facts.default_routes_touched]
+
+
 def fixture_facts(platform_name: str) -> ConfigDerived:
     """Return the facts of the fixture change of one platform."""
     folder = CONFIGS / platform_name.lower()
@@ -332,22 +337,20 @@ def test_a_default_route_touches_the_mgmt_path_only_in_the_mgmt_vrf(
     ):
         facts = derive(platform_name, running, intended)
         assert (facts.mgmt_interface, facts.mgmt_vrf) == (interface, "MGMT")
-        assert facts.default_routes_touched == (
-            DefaultRouteFact(vrf=route_vrf, negated=negated),
-        )
+        assert routes(facts) == [(route_vrf, negated)]
         assert facts.touches_mgmt_path is touches
 
 
-@pytest.mark.parametrize(("route_vrf", "touches"), [("CUST", False), (None, True)])
-def test_a_global_mgmt_interface_matches_global_default_routes(
-    route_vrf: str | None, *, touches: bool
+@pytest.mark.parametrize("route_vrf", ["CUST", None])
+def test_without_a_mgmt_vrf_any_default_route_touches_the_path(
+    route_vrf: str | None,
 ) -> None:
-    """A management interface in the global table has no VRF."""
+    """A management interface in the global table has no VRF, so every route counts."""
     global_route, vrf_route = ROUTES[IOS]
     route = vrf_route.format(vrf=route_vrf) if route_vrf else global_route
     facts = derive(IOS, GATEWAY, GATEWAY + route)
     assert (facts.mgmt_interface, facts.mgmt_vrf) == ("Vlan1", None)
-    assert facts.touches_mgmt_path is touches
+    assert facts.touches_mgmt_path
 
 
 @pytest.mark.parametrize("platform_name", sorted(ROUTES))
@@ -358,9 +361,7 @@ def test_any_default_route_touches_the_path_without_a_mgmt_interface(
     route = ROUTES[platform_name][1].format(vrf="CUST")
     facts = derive(platform_name, "", route)
     assert (facts.mgmt_interface, facts.mgmt_vrf) == (None, None)
-    assert facts.default_routes_touched == (
-        DefaultRouteFact(vrf="CUST", negated=False),
-    )
+    assert routes(facts) == [("CUST", False)]
     assert facts.touches_mgmt_path
 
 
@@ -369,9 +370,10 @@ def test_a_replaced_default_route_is_two_facts() -> None:
     mgmt = MGMT[IOS][1].format(vrf="MGMT")
     route = ROUTES[IOS][1].format(vrf="MGMT")
     facts = derive(IOS, mgmt + route, mgmt + route.replace(".254", ".253"))
+    text = "ip route vrf MGMT 0.0.0.0 0.0.0.0 10.0.0.25"
     assert facts.default_routes_touched == (
-        DefaultRouteFact(vrf="MGMT", negated=False),
-        DefaultRouteFact(vrf="MGMT", negated=True),
+        DefaultRouteFact(text=f"{text}3", vrf="MGMT", negated=False),
+        DefaultRouteFact(text=f"{text}4", vrf="MGMT", negated=True),
     )
 
 

@@ -1,0 +1,1 @@
+Added the management interface, its VRF, and each default route that a change adds or removes, in the global table or a VRF, to the config-derived facts.
