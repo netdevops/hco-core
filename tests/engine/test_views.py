@@ -306,3 +306,19 @@ def test_a_long_xr_default_route_is_found(vrf: str) -> None:
     assert derive("CISCO_XR", family, route).touches_mgmt_path
     changed = route.replace("10.0.0.254", "10.0.0.253")
     assert derive("CISCO_XR", route, changed).touches_mgmt_path
+
+
+@pytest.mark.parametrize("platform_name", ["GENERIC", "JUNIPER_JUNOS", "VYOS"])
+def test_a_platform_without_a_view_raises(platform_name: str) -> None:
+    """A platform with no `hier_config` view gives `UnknownPlatformError`."""
+    running_dump = parse(platform_name, "hostname r1\n")
+    bundle = build_bundle(platform_name, running_dump, running_dump)
+    device = DeviceRecord(
+        id=DeviceID("d1"),
+        name="r1",
+        platform_name=platform_name,
+        mgmt_address="10.0.0.1",
+        metadata={},
+    )
+    with pytest.raises(UnknownPlatformError, match="No view registered"):
+        config_derived(bundle, running_dump, device)

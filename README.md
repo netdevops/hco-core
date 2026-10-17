@@ -172,11 +172,16 @@ assert "show interfaces status" in profile.commands_for(facts.top_level_sections
 - The prefixes do not find a default route in a VRF on `CISCO_IOS` or
   `ARISTA_EOS`, such as `ip route vrf MGMT 0.0.0.0/0`.
 - A platform outside `PLATFORMS` has no default route prefixes.
+- `config_derived()` needs a `hier_config` view. Only `ARISTA_EOS`,
+  `ARUBA_AOSCX`, `CISCO_IOS`, `CISCO_NXOS`, `CISCO_XR`, and `HP_PROCURVE` have
+  one. For any other platform it raises `UnknownPlatformError`, although
+  `build_bundle()` works.
 - In `hier_config` 4.0.0b4, the four built-in drivers have no unused-object
   rules. So `unused_objects_before`, `unused_objects_after`, and
   `unused_objects_created` are empty for these platforms.
 - Every command in the platform table is a `show` command in printable ASCII.
-  A profile refuses any other command, `;`, and any output redirection.
+  A profile refuses any other command, `;`, and any output redirection. After a
+  pipe, only `include`, `exclude`, `begin`, and `section` are permitted.
 
 ## Requirements
 

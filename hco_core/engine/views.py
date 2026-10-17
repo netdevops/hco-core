@@ -25,7 +25,10 @@ def config_derived(
     """Return the facts of the bundle's remediation against the running config.
 
     A management address that is not an IPv4 address matches no interface.
-    A platform outside `PLATFORMS` has no default route prefixes.
+    A platform outside `PLATFORMS` has no default route prefixes. A platform
+    with no `hier_config` view raises `UnknownPlatformError`; only ARISTA_EOS,
+    ARUBA_AOSCX, CISCO_IOS, CISCO_NXOS, CISCO_XR, and HP_PROCURVE have a view.
+    A malformed dump raises `InvalidConfigError`.
     """
     platform_name = bundle.platform_name
     with engine_errors():

@@ -15,15 +15,18 @@ _OUTPUT_FILTERS = ("include ", "exclude ", "begin ", "section ")
 """The only verbs permitted after a pipe. Others, such as `redirect`, write files."""
 
 
-def _is_read_only(command: str) -> bool:
+def _refusal(command: str) -> str | None:
+    """Return the read-only rule that the command breaks, or None."""
     show, *filters = command.split("|")
-    plain = command.isascii() and command.isprintable()
-    return (
-        plain
-        and not {";", ">"} & set(command)
-        and show.startswith("show ")
-        and all(part.strip().startswith(_OUTPUT_FILTERS) for part in filters)
-    )
+    if not (command.isascii() and command.isprintable()):
+        return "it must be printable ASCII"
+    if {";", ">"} & set(command):
+        return "it must not contain ';' or '>'"
+    if not show.startswith("show "):
+        return "it must start with 'show '"
+    if not all(part.strip().startswith(_OUTPUT_FILTERS) for part in filters):
+        return "only include, exclude, begin, or section may follow after a pipe"
+    return None
 
 
 class PlatformProfile(BaseModel):
@@ -52,8 +55,8 @@ class PlatformProfile(BaseModel):
             command for _, commands in self.section_commands for command in commands
         )
         for command in (self.fingerprint_command, *self.baseline_commands, *sections):
-            if not _is_read_only(command):
-                message = f"{command!r} is not a read-only show command"
+            if rule := _refusal(command):
+                message = f"{command!r} is not a read-only show command: {rule}"
                 raise ValueError(message)
         return self
 

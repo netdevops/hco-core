@@ -88,27 +88,29 @@ def test_commands_for_no_section_is_the_baseline() -> None:
 
 
 @pytest.mark.parametrize(
-    "command",
+    ("command", "rule"),
     [
-        "configure terminal",
-        " write memory",
-        "Reload",
-        "show running-config | redirect flash:x",
-        "show running-config | include a | tee flash:x",
-        "show running-config > bootflash:x",
-        "show clock\nreload",
-        "show clock\rreload",
-        "show clock ; reload",
-        "show running-config | include x\nwrite erase",
-        "show clock\x00",
-        "show cl\u00f6ck",
+        ("configure terminal", "start with 'show '"),
+        (" write memory", "start with 'show '"),
+        ("Reload", "start with 'show '"),
+        ("show running-config | redirect flash:x", "after a pipe"),
+        ("show running-config | include a | tee flash:x", "after a pipe"),
+        ("show running-config > bootflash:x", "';' or '>'"),
+        ("show clock\nreload", "printable ASCII"),
+        ("show clock\rreload", "printable ASCII"),
+        ("show clock ; reload", "';' or '>'"),
+        ("show running-config | include x\nwrite erase", "printable ASCII"),
+        ("show clock\x00", "printable ASCII"),
+        ("show cl\u00f6ck", "printable ASCII"),
+        ("show\tversion", "printable ASCII"),
     ],
 )
-def test_profile_refuses_a_write_command(command: str) -> None:
-    """A profile with a write command cannot exist."""
-    with pytest.raises(ValueError, match="read-only"):
+def test_profile_refuses_a_write_command(command: str, rule: str) -> None:
+    """A profile with a write command cannot exist, and the error names the rule."""
+    with pytest.raises(ValueError, match="read-only") as refused:
         PlatformProfile(
             strategy=ApplyStrategy.HCO_TIMED_REVERT,
             fingerprint_command="show clock",
             baseline_commands=(command,),
         )
+    assert rule in str(refused.value)
