@@ -154,7 +154,7 @@ def _run_checks(
     """
     _check_shape(lines)
     with _at_check(2):
-        paths = _parsed_paths(running, lines)
+        paths = _parsed_paths(running, lines, negation)
     _check_destructive(lines)
     pairs = _scaffolding_pairs(paths, negation)
     paired = {index for pair in pairs for index in _subtree(paths, *pair)}
@@ -201,12 +201,17 @@ def _check_shape(lines: tuple[str, ...]) -> None:
             raise _BlockedError(1, f"line {number} is blank")
 
 
-def _parsed_paths(running: HConfig, lines: tuple[str, ...]) -> tuple[_Path, ...]:
+def _parsed_paths(
+    running: HConfig, lines: tuple[str, ...], negation: str
+) -> tuple[_Path, ...]:
     plan_config = HConfig.from_lines(running.driver, lines)
     paths = tuple(tuple(child.path()) for child in plan_config.all_children())
     for index, line in enumerate(lines):
         if index >= len(paths) or paths[index][-1] != line.strip():
             message = f"the driver does not read line {index + 1} as written: {line!r}"
+            raise _BlockedError(2, message)
+        if any(text.startswith(negation) for text in paths[index][:-1]):
+            message = f"line {index + 1} is under a negation: {line!r}"
             raise _BlockedError(2, message)
     return paths
 

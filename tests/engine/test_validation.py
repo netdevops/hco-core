@@ -132,7 +132,7 @@ def test_the_deterministic_remediation_is_the_expected_plan() -> None:
                 " do wr e",
             ),
             INTENDED,
-            3,
+            2,
             id="wr e hidden under scaffolding",
         ),
         pytest.param((UPLINK, " reload in 5"), INTENDED, 3, id="nested reload"),
@@ -221,6 +221,18 @@ def test_the_deterministic_remediation_is_the_expected_plan() -> None:
             id="unnumbered entry that the IOS driver numbers",
         ),
         pytest.param(
+            (f"no {SPARE}", " username evil privilege 15 secret 0 x"),
+            INTENDED,
+            2,
+            id="negation with a child user line",
+        ),
+        pytest.param(
+            (f"no {SPARE}", " no ip route 0.0.0.0 0.0.0.0 198.51.100.66"),
+            INTENDED,
+            2,
+            id="negation with a child negation",
+        ),
+        pytest.param(
             (
                 *REMEDIATION,
                 "interface Loopback99",
@@ -228,7 +240,7 @@ def test_the_deterministic_remediation_is_the_expected_plan() -> None:
                 " username evil privilege 15 secret 0 x",
             ),
             INTENDED,
-            7,
+            2,
             id="lines hidden under a scaffolding removal",
         ),
         pytest.param(

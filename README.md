@@ -229,8 +229,8 @@ The checks run in this order. The first check that fails blocks the plan:
 1. Shape: the plan is not empty, and each line is printable ASCII with no tab
    and is not blank.
 2. Parse: the driver reads each line exactly as written. A repeated section,
-   a line that the driver drops, such as `end`, or a line that the driver
-   changes is blocked.
+   a line that the driver drops, such as `end`, a line that the driver
+   changes, or a line under a negation is blocked.
 3. Destructive: the stems `relo`, `wr ... e`, `erase`, `crypto key zeroiz`,
    `forma`, and `req ... sy`, also after `do `, in any case.
 4. Future report: a negation that matches nothing in the running config.
