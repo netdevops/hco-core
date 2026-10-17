@@ -1,0 +1,142 @@
+"""The safe-apply strategy and the read-only commands of each platform."""
+
+from collections.abc import Iterable, Mapping
+from types import MappingProxyType
+from typing import Self
+
+from pydantic import model_validator
+
+from hco_core.domain.apply import ApplyStrategy
+from hco_core.domain.base import BaseModel
+
+type SectionCommands = tuple[tuple[str, tuple[str, ...]], ...]
+
+_OUTPUT_FILTERS = ("include ", "exclude ", "begin ", "section ")
+"""The only verbs permitted after a pipe. Others, such as `redirect`, write files."""
+
+
+class PlatformProfile(BaseModel):
+    """What HCO may send to one platform, and how it applies a change.
+
+    Every command must start with `show `, with no `>` and only output filters
+    after a pipe. The model refuses any other command, because a collection
+    command must never change the device.
+    """
+
+    strategy: ApplyStrategy
+    fingerprint_command: str
+    baseline_commands: tuple[str, ...]
+    section_commands: SectionCommands = ()
+    """Pairs of a top-level section prefix and the commands it adds."""
+
+    @model_validator(mode="after")
+    def _only_show_commands(self) -> Self:
+        sections = (
+            command for _, commands in self.section_commands for command in commands
+        )
+        for command in (self.fingerprint_command, *self.baseline_commands, *sections):
+            show, *filters = command.split("|")
+            if (
+                not show.startswith("show ")
+                or ">" in command
+                or not all(part.strip().startswith(_OUTPUT_FILTERS) for part in filters)
+            ):
+                message = f"{command!r} is not a read-only show command"
+                raise ValueError(message)
+        return self
+
+    def commands_for(self, top_level_sections: Iterable[str]) -> tuple[str, ...]:
+        """Return the baseline, then the commands of each touched section, once each.
+
+        A section matches a prefix when its text, without a leading `no `, is the
+        prefix or starts with the prefix and a space.
+        """
+        commands = dict.fromkeys(self.baseline_commands)
+        for section in top_level_sections:
+            text = section.removeprefix("no ")
+            for prefix, section_commands in self.section_commands:
+                if text == prefix or text.startswith(f"{prefix} "):
+                    commands.update(dict.fromkeys(section_commands))
+        return tuple(commands)
+
+
+_INTERFACE_COMMANDS = ("show interfaces status", "show interfaces description")
+_LAST_CHANGE = "show running-config | include Last configuration change"
+
+PLATFORMS: Mapping[str, PlatformProfile] = MappingProxyType(
+    {
+        "CISCO_IOS": PlatformProfile(
+            strategy=ApplyStrategy.IOS_ARCHIVE_REPLACE,
+            fingerprint_command=_LAST_CHANGE,
+            baseline_commands=(
+                "show version",
+                "show clock",
+                "show users",
+                "show logging",
+            ),
+            section_commands=(
+                ("interface", _INTERFACE_COMMANDS),
+                ("router bgp", ("show ip bgp summary",)),
+                ("router ospf", ("show ip ospf neighbor",)),
+                ("ip access-list", ("show access-lists",)),
+                ("access-list", ("show access-lists",)),
+                ("ip route", ("show ip route static",)),
+                ("vlan", ("show vlan brief",)),
+            ),
+        ),
+        "CISCO_NXOS": PlatformProfile(
+            strategy=ApplyStrategy.NXOS_CHECKPOINT,
+            fingerprint_command=_LAST_CHANGE,
+            baseline_commands=(
+                "show version",
+                "show clock",
+                "show users",
+                "show logging last 50",
+            ),
+            section_commands=(
+                ("interface", ("show interface status", "show interface description")),
+                ("router bgp", ("show ip bgp summary",)),
+                ("router ospf", ("show ip ospf neighbors",)),
+                ("ip access-list", ("show ip access-lists",)),
+                ("ip route", ("show ip route static",)),
+                ("vlan", ("show vlan brief",)),
+            ),
+        ),
+        "CISCO_XR": PlatformProfile(
+            strategy=ApplyStrategy.IOSXR_COMMIT_CONFIRMED,
+            fingerprint_command="show configuration commit list 1",
+            baseline_commands=(
+                "show version",
+                "show clock",
+                "show users",
+                "show logging last 50",
+            ),
+            section_commands=(
+                ("interface", ("show interfaces brief", "show interfaces description")),
+                ("router bgp", ("show bgp summary",)),
+                ("router ospf", ("show ospf neighbor",)),
+                ("ipv4 access-list", ("show access-lists ipv4",)),
+                ("router static", ("show route static",)),
+            ),
+        ),
+        "ARISTA_EOS": PlatformProfile(
+            strategy=ApplyStrategy.EOS_SESSION_COMMIT_TIMER,
+            fingerprint_command=_LAST_CHANGE,
+            baseline_commands=(
+                "show version",
+                "show clock",
+                "show users",
+                "show logging",
+            ),
+            section_commands=(
+                ("interface", _INTERFACE_COMMANDS),
+                ("router bgp", ("show ip bgp summary",)),
+                ("router ospf", ("show ip ospf neighbor",)),
+                ("ip access-list", ("show ip access-lists",)),
+                ("ip route", ("show ip route static",)),
+                ("vlan", ("show vlan brief",)),
+            ),
+        ),
+    }
+)
+"""The four version 1 platforms, by `Platform` name."""
