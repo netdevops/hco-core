@@ -148,11 +148,13 @@ def _run_checks(
         residual = WorkflowRemediation(future, intended).remediation_config.to_lines()
     if residual:
         raise _BlockedError(6, f"residual remediation after the plan: {residual}")
-    running_paths = {tuple(child.path()) for child in running.all_children()}
-    effective_paths = [paths[index] for index in kept]
+    running_children = _children_by_parent(
+        tuple(child.path()) for child in running.all_children()
+    )
+    plan_children = _children_by_parent(paths[index] for index in kept)
     for add, removal in pairs:
         _check_scaffolding(
-            paths[add], paths[removal], running_paths, effective_paths, negation
+            paths[add], paths[removal], running_children, plan_children, negation
         )
     _check_forbidden(lines, forbidden)
     return tuple(lines[index] for index in sorted({i for pair in pairs for i in pair}))
@@ -194,28 +196,42 @@ def _scaffolding_pairs(
     The match is loose on purpose: `no ip` pairs with `ip route ...`, so that
     check 7 can refuse the pair.
     """
-    open_adds: dict[_Path, list[int]] = {}
+    adds_by_prefix: dict[tuple[_Path, str], list[int]] = {}
+    paired: set[int] = set()
     pairs: list[tuple[int, int]] = []
     for index, path in enumerate(paths):
         parent, text = path[:-1], path[-1]
-        candidates = open_adds.setdefault(parent, [])
         if not text.startswith(negation):
-            candidates.append(index)
+            words = text.split(" ")
+            for count in range(1, len(words) + 1):
+                prefix = " ".join(words[:count])
+                adds_by_prefix.setdefault((parent, prefix), []).append(index)
             continue
         target = text.removeprefix(negation)
-        for add in reversed(candidates):
-            added = paths[add][-1]
-            if added == target or added.startswith(f"{target} "):
-                candidates.remove(add)
-                pairs.append((add, index))
-                break
+        candidates = adds_by_prefix.get((parent, target), [])
+        while candidates and candidates[-1] in paired:
+            candidates.pop()
+        if candidates:
+            add = candidates.pop()
+            paired.add(add)
+            pairs.append((add, index))
     return tuple(pairs)
 
 
 def _subtree(paths: tuple[_Path, ...], *indexes: int) -> Iterable[int]:
     for index in indexes:
         root = paths[index]
-        yield from (i for i, path in enumerate(paths) if path[: len(root)] == root)
+        end = index + 1
+        while end < len(paths) and paths[end][: len(root)] == root:
+            end += 1
+        yield from range(index, end)
+
+
+def _children_by_parent(paths: Iterable[_Path]) -> dict[_Path, list[str]]:
+    children: dict[_Path, list[str]] = {}
+    for path in paths:
+        children.setdefault(path[:-1], []).append(path[-1])
+    return children
 
 
 def _check_convergence(canonical: set[str], future: set[str]) -> None:
@@ -228,13 +244,13 @@ def _check_convergence(canonical: set[str], future: set[str]) -> None:
 def _check_scaffolding(
     add: _Path,
     removal: _Path,
-    running_paths: set[_Path],
-    effective_paths: list[_Path],
+    running_children: dict[_Path, list[str]],
+    plan_children: dict[_Path, list[str]],
     negation: str,
 ) -> None:
     parent, added = add[:-1], add[-1]
     target = removal[-1].removeprefix(negation)
-    running_texts = [path[-1] for path in running_paths if path[:-1] == parent]
+    running_texts = running_children.get(parent, [])
     if added == target:
         removes_running = added in running_texts
     elif target.isdigit():
@@ -245,19 +261,19 @@ def _check_scaffolding(
     if removes_running:
         message = f"scaffolding removal {removal[-1]!r} also removes a running line"
         raise _BlockedError(7, message)
-    sequence, _, command = added.partition(" ")
-    if added.startswith("permit ") or command.startswith("permit "):
-        _check_permit(sequence, parent, running_texts, effective_paths, negation)
+    sequence, _, command = added.lower().partition(" ")
+    if sequence == "permit" or command.startswith("permit "):
+        plan_texts = plan_children.get(parent, [])
+        _check_permit(sequence, parent, running_texts, plan_texts, negation)
 
 
 def _check_permit(
     sequence: str,
     parent: _Path,
     running_texts: list[str],
-    effective_paths: list[_Path],
+    plan_texts: list[str],
     negation: str,
 ) -> None:
-    plan_texts = [path[-1] for path in effective_paths if path[:-1] == parent]
     others = [text.split()[0] for text in (*running_texts, *plan_texts)]
     if not (
         sequence.isdigit()

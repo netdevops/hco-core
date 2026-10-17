@@ -169,6 +169,24 @@ def test_the_deterministic_remediation_is_the_expected_plan() -> None:
             id="permit above a retained entry",
         ),
         pytest.param(
+            (*REMEDIATION, SPARE, " 5 PERMIT ip any any", " no 5"),
+            INTENDED,
+            7,
+            id="permit in upper case",
+        ),
+        pytest.param(
+            (
+                *REMEDIATION,
+                SPARE,
+                " description temp",
+                " no description temp",
+                " no description",
+            ),
+            INTENDED,
+            4,
+            id="negation of a line already removed by scaffolding",
+        ),
+        pytest.param(
             resequence("permit ip any any", "no permit ip any any"),
             INTENDED,
             2,
@@ -200,6 +218,16 @@ def test_the_adversarial_corpus_is_blocked_at_its_check(
             (*REMEDIATION, SPARE, " description temp", " no description temp"),
             (" description temp", " no description temp"),
             id="exact scaffolding",
+        ),
+        pytest.param(
+            (
+                *REMEDIATION,
+                "interface Loopback99",
+                " description temp",
+                "no interface Loopback99",
+            ),
+            ("interface Loopback99", "no interface Loopback99"),
+            id="scaffolding section with children",
         ),
     ],
 )
