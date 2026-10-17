@@ -1,0 +1,2 @@
+Added validate_plan, the single gate that every device write must pass. It runs nine checks and signs only a plan that passes them.
+Added a freshness verdict: LOW and MEDIUM changes use a stored config with a matching fingerprint, and HIGH and CRITICAL changes always collect it again.

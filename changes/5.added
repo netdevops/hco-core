@@ -1,0 +1,1 @@
+Added a YAML inventory, an environment variable secrets provider, and a mock device that replays transcripts, so hco-core runs with no external service.

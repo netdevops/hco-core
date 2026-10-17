@@ -1,0 +1,4 @@
+interface GigabitEthernet0/0/0/0
+ description core link
+!
+lldp

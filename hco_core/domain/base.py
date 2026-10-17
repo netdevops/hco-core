@@ -12,8 +12,9 @@ class BaseModel(PydanticBaseModel):
     `extra="forbid"` so a typo in a payload is an error rather than a silently
     ignored field.
 
-    Collections on subclasses must be immutable — `tuple` and `frozenset`, never
-    `list` or `set` — or the frozen guarantee is only skin deep.
+    Use `tuple` and `frozenset` for collections on subclasses, never `list` or
+    `set`. These are the immutable collections. A `Mapping` field holds a `dict`
+    after validation, so it is not frozen in depth.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")

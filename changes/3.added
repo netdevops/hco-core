@@ -1,0 +1,2 @@
+Added config-derived facts: the interfaces, VLANs, bundles, and NAC ports that a change touches, and whether it touches the management path.
+Added a table of the safe-apply strategy, the fingerprint command, and the read-only show commands for CISCO_IOS, CISCO_NXOS, CISCO_XR, and ARISTA_EOS.

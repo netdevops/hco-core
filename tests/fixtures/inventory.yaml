@@ -1,0 +1,35 @@
+devices:
+  - id: r1
+    name: edge-1
+    platform_name: CISCO_IOS
+    mgmt_address: 10.0.0.1
+    role: edge
+    site: lab
+    criticality: high
+    tags: [edge, wan]
+    intended_config: configs/cisco_ios/intended.txt
+    secret: lab
+    config_context:
+      ntp_servers: [192.0.2.10]
+    metadata:
+      rack: 4
+      owner: neteng
+  - id: s1
+    name: leaf-1
+    platform_name: ARISTA_EOS
+    mgmt_address: 10.0.0.2
+    role: leaf
+    site: lab
+    tags: [leaf]
+  - id: x1
+    name: core-1
+    platform_name: CISCO_XR
+    mgmt_address: 10.0.0.3
+    role: core
+    site: dc
+topology:
+  edges:
+    - {a: r1, b: s1, a_interface: GigabitEthernet1/0/1, b_interface: Ethernet1}
+    - {a: s1, b: x1}
+  redundancy_groups:
+    core: [s1, x1]

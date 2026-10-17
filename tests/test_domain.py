@@ -1,5 +1,8 @@
 """Domain models are frozen, strict, and say what they mean."""
 
+import copy
+import pickle  # ruff: ignore[suspicious-pickle-import]
+
 import pytest
 from pydantic import ValidationError
 
@@ -8,6 +11,7 @@ from hco_core.domain import (
     BaseModel,
     DeviceCredentials,
     DeviceID,
+    DeviceRecord,
     RiskAssessment,
     RiskTier,
     TopologyEdge,
@@ -71,3 +75,16 @@ def test_topology_answers_the_questions_a_risk_floor_asks() -> None:
 def test_base_model_is_the_local_one() -> None:
     """Every domain type must subclass the project base, not pydantic's."""
     assert issubclass(DeviceCredentials, BaseModel)
+
+
+def test_models_construct_copy_and_pickle_without_optional_mappings() -> None:
+    """The default of a mapping field survives deepcopy and pickle."""
+    device = DeviceRecord(
+        id=DeviceID("d1"), name="r1", platform_name="CISCO_IOS", mgmt_address=""
+    )
+    graph = TopologyGraph(nodes=(DeviceID("d1"),))
+    for model in (device, graph):
+        assert copy.deepcopy(model) == model
+        assert pickle.loads(pickle.dumps(model)) == model  # ruff: ignore[suspicious-pickle-usage]
+    assert device.metadata == {}
+    assert graph.redundancy_groups == {}
