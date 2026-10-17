@@ -1,0 +1,1 @@
+Changed the management path check, so a default route in a VRF other than the management VRF no longer touches the management path.

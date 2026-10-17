@@ -279,12 +279,67 @@ risk tier. `LOW` and `MEDIUM` use the snapshot when the fingerprints match.
 `HIGH` and `CRITICAL` always collect again. A missing fingerprint counts as a
 mismatch.
 
+## Development adapters
+
+`hco_core.adapters` holds three adapters that need no external service. Use
+them for development and for tests.
+
+- `YamlSourceOfTruth(path)` reads one inventory file on each call.
+- `EnvSecretsProvider()` reads credentials from environment variables.
+- `MockConnectionDriver(transcripts_dir, token_key=key)` replays transcripts.
+- `hco_core.adapters.registry` selects an adapter by its name: `yaml`, `env`,
+  or `mock`. It holds built-in factories only. An unknown name gives an error
+  that lists the known names.
+
+An inventory file holds devices and topology:
+
+```yaml
+devices:
+  - id: r1
+    name: edge-1
+    platform_name: CISCO_IOS
+    mgmt_address: 10.0.0.1
+    tags: [edge, wan]
+    intended_config: configs/cisco_ios/intended.txt
+    secret: lab
+    config_context: {ntp_servers: [192.0.2.10]}
+    metadata: {rack: 4}
+topology:
+  edges:
+    - {a: r1, b: s1}
+  redundancy_groups:
+    core: [s1, x1]
+```
+
+- Each device holds the `DeviceRecord` fields. `platform_name` must be a
+  platform name that `hier_config` knows.
+- `intended_config` is a path inside the folder of the inventory file.
+- Each `metadata` value becomes a string. A list or a mapping is an error.
+- `secret` is the key of the `env` secret reference. The default is the device
+  id.
+
+The `env` provider reads `HCO_SECRET_<KEY>_USERNAME` and
+`HCO_SECRET_<KEY>_PASSWORD`, and `HCO_SECRET_<KEY>_API_KEY` for an API key.
+`<KEY>` is the key in upper case, with each character other than a letter or
+a digit changed to `_`. An error names the variable, never its value.
+
+The mock driver reads `<transcripts_dir>/<device id>/running.txt` and one file
+for each command, such as `show_version.txt`.
+
+- A device with no transcript folder is unreachable.
+- `collect_state()` refuses a command that is not on the read-only allowlist of
+  the platform.
+- `dry_run()` reports no support.
+- `apply()` verifies the validation token, then always raises
+  `DeviceWritesDisabledError`. Phase 4 adds device writes.
+
 ## Requirements
 
 Python 3.12 to 3.14.
 
-This release depends on `pydantic` and `hier-config` only. Phase 1 adds the
-remediation engine, the database, the review graph, the REST API, and the CLI.
+This release depends on `pydantic`, `hier-config`, and `pyyaml`. Phase 1 adds
+the remediation engine, the database, the review graph, the REST API, and the
+CLI.
 These parts add runtime dependencies, so the list grows in each Phase 1 release.
 Read `pyproject.toml` for the current list.
 
