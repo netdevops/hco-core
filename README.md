@@ -183,6 +183,87 @@ assert "show interfaces status" in profile.commands_for(facts.top_level_sections
   A profile refuses any other command, `;`, and any output redirection. After a
   pipe, only `include`, `exclude`, `begin`, and `section` are permitted.
 
+### The validation gate and freshness
+
+`validate_plan()` is the single gate. Every device write must pass it. It
+signs only a plan that passes all nine checks, and `DeviceSession.apply()`
+must refuse a plan whose token does not verify.
+
+```python
+import re
+import secrets
+
+from hco_core.domain.risk import RiskTier
+from hco_core.engine.freshness import freshness_verdict
+from hco_core.engine.remediation import build_bundle, parse, render_lines
+from hco_core.engine.validation import validate_plan, verify_token
+
+running = parse("CISCO_IOS", "interface Gi0/1\n description old\n")
+intended = parse("CISCO_IOS", "interface Gi0/1\n description new\n")
+bundle = build_bundle("CISCO_IOS", running, intended)
+plan = render_lines("CISCO_IOS", bundle.remediation_dump)
+key = secrets.token_bytes(32)
+forbidden = (re.compile(r"^\s*username\s"),)
+
+outcome = validate_plan(
+    plan, running, intended, platform_name="CISCO_IOS", forbidden=forbidden, key=key
+)
+assert outcome.ok
+assert outcome.token is not None
+assert verify_token(plan, outcome.token, key)
+
+blocked = validate_plan(
+    ("do reload",), running, intended, platform_name="CISCO_IOS", forbidden=(), key=key
+)
+assert blocked.failed_check == 3
+assert blocked.token is None
+
+assert freshness_verdict(RiskTier.MEDIUM, "fp-1", "fp-1") == "use_snapshot"
+assert freshness_verdict(RiskTier.HIGH, "fp-1", "fp-1") == "recollect"
+```
+
+The checks run in this order. The first check that fails blocks the plan:
+
+1. Shape: the plan is not empty, and each line is printable ASCII with no tab
+   and is not blank.
+2. Parse: the driver reads each line exactly as written. A repeated section,
+   a line that the driver drops, such as `end`, or a line that the driver
+   changes is blocked.
+3. Destructive: `relo`, `wr era`, `crypto key zeroiz`, `forma`, and
+   `request system` reboot stems, also after `do `, in any case.
+4. Future report: a negation that matches nothing in the running config.
+5. Convergence: the lines of the plan's future config and the lines of the
+   deterministic remediation's future config are the same set.
+6. Fixed point: after the plan, `hier_config` finds no remediation to do.
+7. Scaffolding: a removal names the line that the plan added, exactly or by
+   sequence number, and removes no running line. A `permit` is scaffolding
+   only in an access list that the plan resequences, below every other entry.
+8. Forbidden: no line matches a pattern that the caller supplies.
+9. Review: the outcome lists every line that starts with the negation prefix.
+
+Checks 4 to 6 use the plan without its scaffolding pairs. The outcome lists
+those pairs in `scaffolding`, so the approver sees them.
+
+Limits:
+
+- The token is an HMAC-SHA256 over the plan lines. It does not identify the
+  device. The caller supplies the key, at least 32 bytes. HCO never stores or
+  logs the key.
+- Checks 10 to 14 of the specification need the run context. The review graph
+  runs them, not this function.
+- The tree model resolves a short negation by prefix: `no ip` removes every
+  `ip` line. Outside a scaffolding pair, checks 5 and 6 block such a line only
+  when the futures differ.
+- The `CISCO_IOS` driver numbers an access list entry that has no sequence
+  number, so check 2 blocks that entry.
+- A scaffolding pair that is not a `permit` passes when it is exact. Only the
+  approver sees its effect between the two lines.
+
+`freshness_verdict()` decides if a stored running config is safe to use at a
+risk tier. `LOW` and `MEDIUM` use the snapshot when the fingerprints match.
+`HIGH` and `CRITICAL` always collect again. A missing fingerprint counts as a
+mismatch.
+
 ## Requirements
 
 Python 3.12 to 3.14.
