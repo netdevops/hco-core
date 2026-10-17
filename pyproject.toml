@@ -24,6 +24,12 @@ python = ">=3.12,<3.15"
 pydantic = "^2.9"
 hier-config = ">=4.0.0b4,<5.0"
 pyyaml = ">=6.0"
+sqlalchemy = {version = "^2.0", extras = ["asyncio"]}
+alembic = "^1.13"
+psycopg = {version = "^3.2", extras = ["binary", "pool"]}
+pydantic-settings = "^2.5"
+structlog = ">=24.4"
+python-ulid = ">=3.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "*"
