@@ -163,15 +163,17 @@ assert profile.strategy == "ios_archive_replace"
 assert "show interfaces status" in profile.commands_for(facts.top_level_sections)
 ```
 
-- `mgmt_interface` is the running interface that holds the management
-  address. `mgmt_vrf` is its VRF. It is `None` for the global table, or when
-  no interface holds the address.
+- `mgmt_interface` is the first running interface by name that holds the
+  management address. Every interface that holds the address counts for
+  `mgmt_vrf` and `touches_mgmt_path`. `mgmt_vrf` is their VRF. It is `None`
+  for the global table, when no interface holds the address, or when the
+  interfaces are in different VRFs.
 - `default_routes_touched` lists each IPv4 default route that the change adds
   or removes, with its text and its VRF. The `default_route_prefixes` of each
   platform hold the global and the VRF forms, such as
   `ip route vrf {vrf} 0.0.0.0/0` on `ARISTA_EOS`. The longest match wins.
-- `touches_mgmt_path` is true when the change touches `mgmt_interface`, or a
-  default route in `mgmt_vrf`. When `mgmt_vrf` is `None`, any default route
+- `touches_mgmt_path` is true when the change touches an interface that holds
+  the management address, or a default route in `mgmt_vrf`. When `mgmt_vrf` is `None`, any default route
   counts, and a change of the default gateway of the view counts.
 - The management address must be an IPv4 address. A host name or an IPv6
   address matches no interface.
@@ -180,7 +182,10 @@ assert "show interfaces status" in profile.commands_for(facts.top_level_sections
   `ip vrf forwarding`, `vrf member`, or `vrf` child line of the interface.
 - `ipv4_default_gw` of the view is not used to find default routes. The route
   lines are. On `CISCO_IOS`, the view reads `ip default-gateway` only.
-- A VRF name in a parent line is cut after 128 characters.
+- A parent line is cut after the length of the longest prefix plus 128
+  characters, so a long VRF name in a parent line can be cut. A route VRF of
+  128 characters or more counts for the management path when `mgmt_vrf`
+  starts with it.
 - These are not found: an IPv6 default route, a default route that a routing
   protocol supplies, and a route that leaks from one VRF to another.
 - A platform outside `PLATFORMS` has no default route prefixes.

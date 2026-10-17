@@ -59,8 +59,8 @@ def config_derived(
         ]
         unused_before = _texts(running.unused_objects())
         unused_after = _texts(future.unused_objects())
-        mgmt = _mgmt_view(views[0].interface_views, device.mgmt_address)
-        mgmt_vrf = _vrf_of(mgmt) if mgmt else None
+        holders = _holders(views[0].interface_views, device.mgmt_address)
+        mgmt_vrf = _common_vrf(holders)
         routes = _default_routes_touched(platform_name, (remediation, running, future))
         return ConfigDerived(
             interfaces_touched=_sorted(view.name for view in touched),
@@ -75,17 +75,17 @@ def config_derived(
             command_count=len(lines),
             remediation_tags=_sorted(remediation.tags),
             top_level_sections=_sorted(sections),
-            mgmt_interface=mgmt.name if mgmt else None,
+            mgmt_interface=holders[0].name if holders else None,
             mgmt_vrf=mgmt_vrf,
             default_routes_touched=routes,
             touches_mgmt_path=(
-                mgmt is not None and mgmt.name in {v.name for v in touched}
+                bool({v.name for v in holders} & {v.name for v in touched})
             )
             or (
                 mgmt_vrf is None
                 and views[0].ipv4_default_gw != views[1].ipv4_default_gw
             )
-            or any(mgmt_vrf in {None, route.vrf} for route in routes),
+            or any(_in_vrf(route.vrf, mgmt_vrf) for route in routes),
         )
 
 
@@ -116,22 +116,45 @@ def _vlans_touched(
     return _sorted(ids)
 
 
-def _mgmt_view(
+def _holders(
     views: Iterable[ConfigViewInterface], address: str
-) -> ConfigViewInterface | None:
-    """Return the first interface by name that holds the IPv4 address, or None."""
+) -> list[ConfigViewInterface]:
+    """Return the interfaces that hold the IPv4 address, sorted by name."""
     try:
         wanted = ip_interface(address).ip
     except ValueError:
-        return None
+        return []
     if not isinstance(wanted, IPv4Address):
-        return None
-    holders = (
-        view
-        for view in views
-        if any(found.ip == wanted for found in view.ipv4_interfaces)
+        return []
+    return sorted(
+        (
+            view
+            for view in views
+            if any(found.ip == wanted for found in view.ipv4_interfaces)
+        ),
+        key=lambda view: view.name,
     )
-    return min(holders, key=lambda view: view.name, default=None)
+
+
+def _common_vrf(holders: Iterable[ConfigViewInterface]) -> str | None:
+    """Return the VRF that every holder shares, or None if they differ or none exist."""
+    vrfs = {_vrf_of(view) for view in holders}
+    return vrfs.pop() if len(vrfs) == 1 else None
+
+
+def _in_vrf(route_vrf: str | None, mgmt_vrf: str | None) -> bool:
+    """Return True if a default route in `route_vrf` can be on the management path.
+
+    An unknown management VRF matches every route. A route VRF name that a
+    parent cut can shorten matches when the management VRF starts with it.
+    """
+    if mgmt_vrf is None or route_vrf == mgmt_vrf:
+        return True
+    return (
+        route_vrf is not None
+        and len(route_vrf) >= _VRF_NAME_CHARACTERS
+        and mgmt_vrf.startswith(route_vrf)
+    )
 
 
 def _vrf_of(view: ConfigViewInterface) -> str | None:

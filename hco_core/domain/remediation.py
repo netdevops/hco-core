@@ -79,9 +79,12 @@ class ConfigDerived(BaseModel):
     remediation_tags: tuple[str, ...]
     top_level_sections: tuple[str, ...]
     mgmt_interface: str | None
-    """The running interface that holds the management address, or None."""
+    """The first running interface by name that holds the management address, or None.
+
+    Every holder counts for `mgmt_vrf` and `touches_mgmt_path`.
+    """
     mgmt_vrf: str | None
-    """The VRF of `mgmt_interface`, or None for the global table or no interface."""
+    """The VRF of the holders, or None for the global table, no holder, or two VRFs."""
     default_routes_touched: tuple[DefaultRouteFact, ...]
     touches_mgmt_path: bool
     """True if the change touches `mgmt_interface` or a default route in `mgmt_vrf`.
