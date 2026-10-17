@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from hco_core.domain.remediation import DumpJson
 from hco_core.domain.validation import ValidationOutcome
 from hco_core.engine.errors import InvalidConfigError, UnknownPlatformError
+from hco_core.engine.fingerprints import change_fingerprint
 from hco_core.engine.remediation import build_bundle, parse, render_lines
 from hco_core.engine.validation import validate_plan, verify_token
 
@@ -73,6 +74,17 @@ def validate(
     )
 
 
+def verify(
+    plan: tuple[str, ...],
+    token: str,
+    key: bytes = KEY,
+    platform_name: str = IOS,
+    running: DumpJson = RUNNING,
+) -> bool:
+    """Verify a token for the IOS running config."""
+    return verify_token(plan, token, key, platform_name=platform_name, running=running)
+
+
 def test_the_deterministic_remediation_is_the_expected_plan() -> None:
     """Guard the corpus: the plans below are built from this remediation."""
     assert (
@@ -107,6 +119,22 @@ def test_the_deterministic_remediation_is_the_expected_plan() -> None:
         pytest.param(("crypto key zeroize rsa",), INTENDED, 3, id="zeroize"),
         pytest.param(("format flash:",), INTENDED, 3, id="format"),
         pytest.param(("request system reboot",), INTENDED, 3, id="request system"),
+        pytest.param(("do wr e",), INTENDED, 3, id="do wr e"),
+        pytest.param(("write e",), INTENDED, 3, id="write e"),
+        pytest.param(("do erase startup-config",), INTENDED, 3, id="erase"),
+        pytest.param(("request system software add x",), INTENDED, 3, id="request any"),
+        pytest.param(("req sys reboot",), INTENDED, 3, id="req sys"),
+        pytest.param(
+            (
+                *REMEDIATION,
+                "interface Loopback99",
+                "no interface Loopback99",
+                " do wr e",
+            ),
+            INTENDED,
+            3,
+            id="wr e hidden under scaffolding",
+        ),
         pytest.param((UPLINK, " reload in 5"), INTENDED, 3, id="nested reload"),
         pytest.param(
             (*REMEDIATION, "no ip route 192.0.2.0 255.255.255.0 198.51.100.1"),
@@ -192,6 +220,63 @@ def test_the_deterministic_remediation_is_the_expected_plan() -> None:
             2,
             id="unnumbered entry that the IOS driver numbers",
         ),
+        pytest.param(
+            (
+                *REMEDIATION,
+                "interface Loopback99",
+                "no interface Loopback99",
+                " username evil privilege 15 secret 0 x",
+            ),
+            INTENDED,
+            7,
+            id="lines hidden under a scaffolding removal",
+        ),
+        pytest.param(
+            (
+                *REMEDIATION,
+                "interface Loopback99",
+                " description temp",
+                "no interface Loopback99",
+            ),
+            INTENDED,
+            7,
+            id="lines hidden under a scaffolding add",
+        ),
+        pytest.param(
+            (
+                *ACL_CHANGE,
+                *DESCRIPTION,
+                " IP access-group CUST-IN in",
+                " no IP access-group CUST-IN in",
+            ),
+            INTENDED,
+            7,
+            id="scaffolding removes a running line in another case",
+        ),
+        pytest.param(
+            (ACL, " 05 permit ip any any", " no 05", *ACL_CHANGE[1:], *DESCRIPTION),
+            INTENDED,
+            7,
+            id="sequence number with a leading zero",
+        ),
+        pytest.param(
+            (*REMEDIATION, SPARE, " shutdown", " no shutdown"),
+            INTENDED,
+            7,
+            id="shutdown scaffolding",
+        ),
+        pytest.param(
+            (*REMEDIATION, SPARE, " description temp", " no description temp"),
+            INTENDED,
+            7,
+            id="description scaffolding",
+        ),
+        pytest.param(
+            resequence("5 permit tcp any any eq 22", "no 5"),
+            INTENDED,
+            7,
+            id="permit that is not a catch-all",
+        ),
     ],
 )
 def test_the_adversarial_corpus_is_blocked_at_its_check(
@@ -214,21 +299,6 @@ def test_the_adversarial_corpus_is_blocked_at_its_check(
             (" 5 permit ip any any", " no 5"),
             id="acl resequence with permit-any scaffolding",
         ),
-        pytest.param(
-            (*REMEDIATION, SPARE, " description temp", " no description temp"),
-            (" description temp", " no description temp"),
-            id="exact scaffolding",
-        ),
-        pytest.param(
-            (
-                *REMEDIATION,
-                "interface Loopback99",
-                " description temp",
-                "no interface Loopback99",
-            ),
-            ("interface Loopback99", "no interface Loopback99"),
-            id="scaffolding section with children",
-        ),
     ],
 )
 def test_a_converging_plan_passes_with_a_token(
@@ -239,7 +309,7 @@ def test_a_converging_plan_passes_with_a_token(
     assert outcome.ok, outcome.problems
     assert outcome.scaffolding == scaffolding
     assert outcome.token is not None
-    assert verify_token(plan, outcome.token, KEY)
+    assert verify(plan, outcome.token)
 
 
 def test_negations_are_listed_for_review() -> None:
@@ -267,13 +337,16 @@ def test_the_fixture_remediation_passes_on_each_platform(platform_name: str) -> 
     )
     assert outcome.ok, outcome.problems
     assert outcome.token is not None
-    assert verify_token(plan, outcome.token, KEY)
+    assert verify_token(
+        plan, outcome.token, KEY, platform_name=platform_name, running=running
+    )
 
 
 def test_the_token_is_an_hmac_of_the_canonical_plan_bytes() -> None:
-    """The canonical form is the compact JSON of a version tag and the lines."""
+    """The canonical form binds the platform, the running config, and the lines."""
     canonical = json.dumps(
-        ["hco-core/validation/v1", list(REMEDIATION)], separators=(",", ":")
+        ["hco-core/validation/v1", IOS, change_fingerprint(RUNNING), list(REMEDIATION)],
+        separators=(",", ":"),
     ).encode("ascii")
     expected = hmac.new(KEY, canonical, hashlib.sha256).hexdigest()
     assert validate(REMEDIATION).token == expected
@@ -298,13 +371,29 @@ def test_a_changed_plan_or_key_does_not_verify(
     """The token binds the exact lines, their order, and the key."""
     token = validate(REMEDIATION).token
     assert token is not None
-    assert not verify_token(plan, token, key)
+    assert not verify(plan, token, key)
+
+
+@pytest.mark.parametrize(
+    ("platform_name", "running"),
+    [
+        pytest.param("CISCO_NXOS", RUNNING, id="other platform"),
+        pytest.param(IOS, parse(IOS, "hostname r2\n"), id="other running config"),
+    ],
+)
+def test_a_token_does_not_verify_for_another_device(
+    platform_name: str, running: DumpJson
+) -> None:
+    """The token binds the platform and the running config that the gate checked."""
+    token = validate(REMEDIATION).token
+    assert token is not None
+    assert not verify(REMEDIATION, token, platform_name=platform_name, running=running)
 
 
 @pytest.mark.parametrize("token", ["", "00", "é" * 64])
 def test_a_malformed_token_does_not_verify(token: str) -> None:
     """A token that is not the digest fails without an error."""
-    assert not verify_token(REMEDIATION, token, KEY)
+    assert not verify(REMEDIATION, token)
 
 
 def test_a_short_key_is_refused() -> None:
@@ -314,7 +403,7 @@ def test_a_short_key_is_refused() -> None:
             REMEDIATION, RUNNING, INTENDED, platform_name=IOS, forbidden=(), key=b""
         )
     with pytest.raises(ValueError, match="32 bytes"):
-        verify_token(REMEDIATION, "00", b"short")
+        verify(REMEDIATION, "00", b"short")
 
 
 def test_a_malformed_config_raises_an_engine_error() -> None:
@@ -350,3 +439,10 @@ def test_an_inconsistent_outcome_is_refused(
     """Only a passed outcome carries a token, and only a blocked one a problem."""
     with pytest.raises(ValidationError):
         ValidationOutcome(failed_check=failed_check, problems=problems, token=token)
+
+
+def test_a_problem_quotes_a_long_line_in_part() -> None:
+    """A hostile line does not fill the problem text."""
+    (problem,) = validate(("description " + "a" * 1_000_000,)).problems
+    assert len(problem) < 300  # ruff: ignore[magic-value-comparison]
+    assert problem.endswith("more characters)")

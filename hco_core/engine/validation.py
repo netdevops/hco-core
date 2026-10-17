@@ -17,6 +17,7 @@ from hier_config.registry import get_hconfig_driver
 
 from hco_core.domain.validation import ValidationOutcome
 from hco_core.engine.errors import engine_errors
+from hco_core.engine.fingerprints import change_fingerprint
 from hco_core.engine.remediation import load_dump
 
 type _Path = tuple[str, ...]
@@ -28,19 +29,27 @@ _DESTRUCTIVE = tuple(
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
         r"^\s*(do\s+)?relo",
-        r"^\s*(do\s+)?wri?t?e?\s+era",
+        r"^\s*(do\s+)?wr\w*\s+e",
+        r"^\s*(do\s+)?erase\b",
         r"^\s*(do\s+)?crypto\s+key\s+zeroiz",
         r"^\s*(do\s+)?forma",
-        r"^\s*(do\s+)?request\s+system\s+(reboo|halt|zeroiz|power-off)",
+        r"^\s*(do\s+)?req\w*\s+sy",
     )
 )
 _ACCESS_LISTS = ("ip access-list ", "ipv4 access-list ", "ipv6 access-list ")
+_PERMIT_ANY = re.compile(
+    r"(\d+) permit (?:(?:ip|ipv4|ipv6) )?any(?: any)?", re.IGNORECASE
+)
+_PROBLEM_CHARACTERS = 200
 
 
 class _BlockedError(Exception):
     """A check failed. Only `validate_plan` catches it."""
 
     def __init__(self, check: int, problem: str) -> None:
+        cut = len(problem) - _PROBLEM_CHARACTERS
+        if cut > 0:
+            problem = f"{problem[:_PROBLEM_CHARACTERS]}... ({cut} more characters)"
         super().__init__(problem)
         self.check = check
         self.problem = problem
@@ -81,17 +90,25 @@ def validate_plan(  # ruff: ignore[too-many-arguments]
             line for line in lines if line.strip().startswith(negation)
         ),
         scaffolding=scaffolding,
-        token=_sign(lines, key),
+        token=_sign(lines, key, platform_name, running),
     )
 
 
-def verify_token(plan: Sequence[str], token: str, key: bytes) -> bool:
-    """Return True if the token is the signature of this exact plan.
+def verify_token(
+    plan: Sequence[str],
+    token: str,
+    key: bytes,
+    *,
+    platform_name: str,
+    running: Mapping[str, object],
+) -> bool:
+    """Return True if the token signs this plan for this platform and running config.
 
     A key shorter than `MIN_KEY_BYTES` raises `ValueError`.
     """
     _require_key(key)
-    return hmac.compare_digest(_sign(tuple(plan), key).encode(), token.encode())
+    expected = _sign(tuple(plan), key, platform_name, running)
+    return hmac.compare_digest(expected.encode(), token.encode())
 
 
 def _require_key(key: bytes) -> None:
@@ -100,8 +117,17 @@ def _require_key(key: bytes) -> None:
         raise ValueError(message)
 
 
-def _sign(lines: tuple[str, ...], key: bytes) -> str:
-    canonical = json.dumps([_CANONICAL_TAG, list(lines)], separators=(",", ":"))
+def _sign(
+    lines: tuple[str, ...],
+    key: bytes,
+    platform_name: str,
+    running: Mapping[str, object],
+) -> str:
+    running_digest = change_fingerprint(running)
+    canonical = json.dumps(
+        [_CANONICAL_TAG, platform_name, running_digest, list(lines)],
+        separators=(",", ":"),
+    )
     return hmac.new(key, canonical.encode("ascii"), hashlib.sha256).hexdigest()
 
 
@@ -153,6 +179,9 @@ def _run_checks(
     )
     plan_children = _children_by_parent(paths[index] for index in kept)
     for add, removal in pairs:
+        if len(set(_subtree(paths, add, removal))) > len((add, removal)):
+            message = f"scaffolding {paths[add][-1]!r} or its removal has child lines"
+            raise _BlockedError(7, message)
         _check_scaffolding(
             paths[add], paths[removal], running_children, plan_children, negation
         )
@@ -249,44 +278,38 @@ def _check_scaffolding(
     negation: str,
 ) -> None:
     parent, added = add[:-1], add[-1]
-    target = removal[-1].removeprefix(negation)
-    running_texts = running_children.get(parent, [])
-    if added == target:
-        removes_running = added in running_texts
-    elif target.isdigit():
-        removes_running = any(text.split()[0] == target for text in running_texts)
-    else:
+    permit_any = _PERMIT_ANY.fullmatch(added)
+    if not permit_any:
+        message = f"only a numbered permit-any entry is scaffolding: {added!r}"
+        raise _BlockedError(7, message)
+    sequence = permit_any.group(1)
+    if sequence.startswith("0") or removal[-1].removeprefix(negation) not in {
+        added,
+        sequence,
+    }:
         message = f"scaffolding removal {removal[-1]!r} does not name {added!r}"
         raise _BlockedError(7, message)
-    if removes_running:
+    plan_texts = plan_children.get(parent, [])
+    running_numbers = _sequences(running_children.get(parent, []))
+    if int(sequence) in running_numbers:
         message = f"scaffolding removal {removal[-1]!r} also removes a running line"
         raise _BlockedError(7, message)
-    sequence, _, command = added.lower().partition(" ")
-    if sequence == "permit" or command.startswith("permit "):
-        plan_texts = plan_children.get(parent, [])
-        _check_permit(sequence, parent, running_texts, plan_texts, negation)
-
-
-def _check_permit(
-    sequence: str,
-    parent: _Path,
-    running_texts: list[str],
-    plan_texts: list[str],
-    negation: str,
-) -> None:
-    others = [text.split()[0] for text in (*running_texts, *plan_texts)]
     if not (
-        sequence.isdigit()
-        and len(parent) == 1
-        and parent[0].startswith(_ACCESS_LISTS)
+        len(parent) == 1
+        and parent[0].casefold().startswith(_ACCESS_LISTS)
         and any(text.startswith(negation) for text in plan_texts)
-        and all(int(sequence) < int(other) for other in others if other.isdigit())
+        and all(int(sequence) < n for n in (*running_numbers, *_sequences(plan_texts)))
     ):
         message = (
             "a permit is scaffolding only in an access list that the plan "
             f"resequences, below every other entry: {parent}"
         )
         raise _BlockedError(7, message)
+
+
+def _sequences(texts: list[str]) -> list[int]:
+    firsts = (text.split()[0] for text in texts)
+    return [int(first) for first in firsts if first.isdigit()]
 
 
 def _check_forbidden(

@@ -210,7 +210,9 @@ outcome = validate_plan(
 )
 assert outcome.ok
 assert outcome.token is not None
-assert verify_token(plan, outcome.token, key)
+assert verify_token(
+    plan, outcome.token, key, platform_name="CISCO_IOS", running=running
+)
 
 blocked = validate_plan(
     ("do reload",), running, intended, platform_name="CISCO_IOS", forbidden=(), key=key
@@ -229,15 +231,17 @@ The checks run in this order. The first check that fails blocks the plan:
 2. Parse: the driver reads each line exactly as written. A repeated section,
    a line that the driver drops, such as `end`, or a line that the driver
    changes is blocked.
-3. Destructive: `relo`, `wr era`, `crypto key zeroiz`, `forma`, and
-   `request system` reboot stems, also after `do `, in any case.
+3. Destructive: the stems `relo`, `wr ... e`, `erase`, `crypto key zeroiz`,
+   `forma`, and `req ... sy`, also after `do `, in any case.
 4. Future report: a negation that matches nothing in the running config.
 5. Convergence: the lines of the plan's future config and the lines of the
    deterministic remediation's future config are the same set.
 6. Fixed point: after the plan, `hier_config` finds no remediation to do.
-7. Scaffolding: a removal names the line that the plan added, exactly or by
-   sequence number, and removes no running line. A `permit` is scaffolding
-   only in an access list that the plan resequences, below every other entry.
+7. Scaffolding: only a numbered permit-any entry can be scaffolding, such as
+   `5 permit ip any any`. The pair has no child lines. The removal names the
+   entry exactly or by its sequence number, with no leading zero. No running
+   entry has that number. The access list is at the top level, the plan
+   removes another of its entries, and the number is below every other entry.
 8. Forbidden: no line matches a pattern that the caller supplies.
 9. Review: the outcome lists every line that starts with the negation prefix.
 
@@ -246,9 +250,9 @@ those pairs in `scaffolding`, so the approver sees them.
 
 Limits:
 
-- The token is an HMAC-SHA256 over the plan lines. It does not identify the
-  device. The caller supplies the key, at least 32 bytes. HCO never stores or
-  logs the key.
+- The token is an HMAC-SHA256 over the plan lines, the platform name, and the
+  change fingerprint of the running config. The caller supplies the key, at
+  least 32 bytes. HCO never stores or logs the key.
 - Checks 10 to 14 of the specification need the run context. The review graph
   runs them, not this function.
 - The tree model resolves a short negation by prefix: `no ip` removes every
@@ -256,8 +260,10 @@ Limits:
   when the futures differ.
 - The `CISCO_IOS` driver numbers an access list entry that has no sequence
   number, so check 2 blocks that entry.
-- A scaffolding pair that is not a `permit` passes when it is exact. Only the
-  approver sees its effect between the two lines.
+- Spec 08 permits the permit-any scaffolding only in an access list that is
+  not tagged security-critical. Devices have no tags in Phase 1, so the gate
+  does not check this condition.
+- A problem text quotes at most 200 characters.
 
 `freshness_verdict()` decides if a stored running config is safe to use at a
 risk tier. `LOW` and `MEDIUM` use the snapshot when the fingerprints match.
