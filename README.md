@@ -404,22 +404,28 @@ one with its default.
 - `hco_core.logging.configure_logging(settings)` sends structlog and
   standard-library log lines to stdout, as JSON or for a console.
 
-## Approvals, runs, and notifications
+## Approvals
 
-`hco_core.services` owns the writes of a run. Each surface, such as the API or
-the CLI, calls these services and does not write the rows itself.
+`hco_core.services.approval.ApprovalService` records approvals for each
+surface, such as the API or the CLI. A surface does not write the approval
+rows itself.
 
-- `ApprovalService.upsert_request()` opens one request for each change set. It
-  copies the requester from `change_set.requested_by`. A second call returns
-  the same request and never changes the requester.
-- `ApprovalService.decide()` records one decision. It refuses the requester
-  with `RequesterMayNotApproveError` and a second decision by the same person
-  with `DuplicateDecisionError`.
+- `upsert_request()` opens one request for each change set. It copies the
+  requester from `change_set.requested_by`. A second call returns the same
+  request and never changes the requester.
+- `decide()` records one decision. It refuses the requester with
+  `RequesterMayNotApproveError` and a second decision by the same person with
+  `DuplicateDecisionError`. Each decision writes one `audit_event` row.
 - One rejection rejects the request. The approvals close it when they reach
   the count of the risk tier in `hco_core.policy.tiers.APPROVALS_BY_TIER`:
   one for `LOW` and `MEDIUM`, two for `HIGH` and `CRITICAL`.
 - When a decision closes the request, `decide()` calls the `resume` callback
   one time. Phase 1 does not check roles.
+
+## Runs and notifications
+
+`hco_core.services` also owns the other writes of a run.
+
 - `RunRepository` creates and updates change sets, runs, and config
   snapshots. Each state change writes one `audit_event` row.
 - `NotificationLedger.deliver()` sends a message one time for each run,
