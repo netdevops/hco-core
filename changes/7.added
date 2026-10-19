@@ -1,0 +1,3 @@
+Added the approval service. Each person decides once, the risk tier sets the number of approvals, and the requester never counts.
+Added a notification ledger that sends each run notification once and updates the message when a step runs again.
+Added the log notification channel, with the name log, which writes each notification to the application log.
