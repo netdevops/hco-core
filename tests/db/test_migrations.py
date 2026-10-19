@@ -12,7 +12,7 @@ from sqlalchemy.dialects.postgresql import TIMESTAMP
 from hco_core.db.migrate import ALEMBIC_INI, downgrade, upgrade
 from hco_core.db.models import Base
 from hco_core.settings import CoreSettings
-from tests.db.conftest import TABLES
+from tests.conftest import TABLES
 
 SECRET_NAMES = ("password", "secret", "token", "key")
 ULID_LENGTH = 26
