@@ -370,9 +370,9 @@ schema `hco`: `device`, `config_snapshot`, `change_set`, `remediation_run`,
   a direct `INSERT` or `UPDATE`.
 - A second trigger refuses a change of the requester of an approval request,
   also through `INSERT ... ON CONFLICT DO UPDATE`.
-- The requester and the actor must have no white space, such as a space, a tab,
-  or a new line, at either end. They must not be empty. The comparison is
-  case-sensitive.
+- The requester and the actor must have no white space at either end, such as
+  a space, a tab, a new line, or a non-breaking space. They must not be empty.
+  The comparison is case-sensitive.
 - `device.platform_name` must be upper case and must not be a number.
 - `UNIQUE (request_id, actor)` permits one decision for each person.
   `UNIQUE (run_id, channel, purpose)` permits one notification for each

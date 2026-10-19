@@ -82,7 +82,7 @@ FOR EACH ROW EXECUTE FUNCTION hco.reject_requester_change()
 def trimmed(table: str, column: str) -> sa.CheckConstraint:
     """Return the named `CHECK` that refuses white space at an end and an empty name."""
     return sa.CheckConstraint(
-        f"{column} !~ '^[[:space:]]' AND {column} !~ '[[:space:]]$' AND {column} <> ''",
+        f"{column} !~ '^[[:space:]\\u00a0]' AND {column} !~ '[[:space:]\\u00a0]$' AND {column} <> ''",
         name=op.f(f"ck_{table}_{column}_trimmed"),
     )
 
