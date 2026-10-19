@@ -4,9 +4,12 @@ Every state transition writes one `audit_event` in the same transaction.
 """
 
 import hashlib
-from dataclasses import dataclass
+from collections.abc import Collection
+from dataclasses import dataclass, replace
 from typing import Literal
 
+from pydantic import TypeAdapter
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from hco_core.db import models
@@ -20,9 +23,25 @@ from hco_core.services.audit import Actor, AuditEntry, add_audit_event
 type SnapshotKind = Literal["running", "intended", "future", "post_change"]
 type SnapshotSource = Literal["device", "git", "sot", "upload"]
 
+_DUMP: TypeAdapter[DumpJson] = TypeAdapter(DumpJson)
+
 
 class RunNotFoundError(LookupError):
     """No remediation run or change set has the id."""
+
+
+class RunStateError(RuntimeError):
+    """The run is not in a state that permits the write."""
+
+
+@dataclass(frozen=True, slots=True)
+class RunView:
+    """The state of a run and the source of truth identity of its device."""
+
+    state: RunState
+    device_id: str
+    sot_device_id: str
+    platform_name: str
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -102,21 +121,123 @@ class RunRepository:
             _audit_transition(session, actor, run, None)
             return run.id
 
-    async def update_run(self, run_id: str, update: RunUpdate, actor: Actor) -> None:
-        """Set the given fields, and audit the state if it changes.
+    async def get_run(self, run_id: str) -> RunView:
+        """Return the state of the run and the identity of its device.
 
         Raises:
             RunNotFoundError: If no run has the id.
 
         """
+        async with self._sessions() as session:
+            row = (
+                await session.execute(
+                    select(
+                        models.RemediationRun.state,
+                        models.Device.id,
+                        models.Device.sot_device_id,
+                        models.Device.platform_name,
+                    )
+                    .join(models.Device)
+                    .where(models.RemediationRun.id == run_id)
+                )
+            ).one_or_none()
+        if row is None:
+            message = f"no remediation run {run_id!r}"
+            raise RunNotFoundError(message)
+        return RunView(RunState(row[0]), row[1], row[2], row[3])
+
+    async def update_run(
+        self,
+        run_id: str,
+        update: RunUpdate,
+        actor: Actor,
+        *,
+        only_from: Collection[RunState] | None = None,
+    ) -> bool:
+        """Set the given fields, and audit the state if it changes.
+
+        With `only_from`, a run in another state stays unchanged. A missing run
+        raises `RunNotFoundError`.
+        """
         async with self._sessions.begin() as session:
-            run = await session.get(models.RemediationRun, run_id, with_for_update=True)
-            if run is None:
-                message = f"no remediation run {run_id!r}"
-                raise RunNotFoundError(message)
+            run = await _locked_run(session, run_id)
+            if only_from is not None and run.state not in only_from:
+                return False
             before = run.state
             _apply(run, update)
             _audit_transition(session, actor, run, before)
+            return True
+
+    async def record_collection(
+        self, run_id: str, running: Snapshot, intended: Snapshot, actor: Actor
+    ) -> tuple[DumpJson, DumpJson]:
+        """Store the two snapshots and move the run to `COLLECTING`, one time.
+
+        A run in `COLLECTING` keeps its snapshots, and the call returns their
+        dumps. The return is the running and the intended dump. A missing run
+        raises `RunNotFoundError`.
+
+        Raises:
+            RunStateError: If the run is in another state.
+
+        """
+        async with self._sessions.begin() as session:
+            run = await _locked_run(session, run_id)
+            if run.state == RunState.DRAFT:
+                running_row = _snapshot_row(running)
+                intended_row = _snapshot_row(intended)
+                session.add_all([running_row, intended_row])
+                await session.flush()
+                run.running_snapshot_id = running_row.id
+                run.intended_snapshot_id = intended_row.id
+                run.state = RunState.COLLECTING
+                _audit_transition(session, actor, run, RunState.DRAFT)
+                return running.dump, intended.dump
+            if run.state == RunState.COLLECTING:
+                stored = [
+                    await session.get(models.ConfigSnapshot, snapshot_id)
+                    for snapshot_id in (
+                        run.running_snapshot_id,
+                        run.intended_snapshot_id,
+                    )
+                ]
+                dumps = [_DUMP.validate_python(row.dump) for row in stored if row]
+                if len(dumps) == len(stored):
+                    return dumps[0], dumps[1]
+            message = f"run {run_id!r} is {run.state}; collection needs DRAFT"
+            raise RunStateError(message)
+
+    async def record_remediation(
+        self, run_id: str, future: Snapshot, update: RunUpdate, actor: Actor
+    ) -> None:
+        """Store the future snapshot and move the run to `REMEDIATING`, one time.
+
+        A run in `REMEDIATING` stays unchanged. A missing run raises
+        `RunNotFoundError`.
+
+        Raises:
+            RunStateError: If the run is not in `COLLECTING` or `REMEDIATING`.
+
+        """
+        async with self._sessions.begin() as session:
+            run = await _locked_run(session, run_id)
+            if run.state == RunState.REMEDIATING:
+                return
+            if run.state != RunState.COLLECTING:
+                message = f"run {run_id!r} is {run.state}; remediation needs COLLECTING"
+                raise RunStateError(message)
+            future_row = _snapshot_row(future)
+            session.add(future_row)
+            await session.flush()
+            _apply(
+                run,
+                replace(
+                    update,
+                    state=RunState.REMEDIATING,
+                    future_snapshot_id=future_row.id,
+                ),
+            )
+            _audit_transition(session, actor, run, RunState.COLLECTING)
 
     async def set_change_set_state(
         self, change_set_id: str, state: RunState, actor: Actor
@@ -141,19 +262,31 @@ class RunRepository:
     async def add_snapshot(self, snapshot: Snapshot) -> str:
         """Store the snapshot with the sha256 of its body and return its id."""
         async with self._sessions.begin() as session:
-            row = models.ConfigSnapshot(
-                id=new_id(),
-                device_id=snapshot.device_id,
-                kind=snapshot.kind,
-                format=snapshot.format,
-                source=snapshot.source,
-                body_sha256=hashlib.sha256(snapshot.body.encode()).hexdigest(),
-                body_inline=snapshot.body,
-                dump=dict(snapshot.dump),
-                device_fingerprint=snapshot.device_fingerprint,
-            )
+            row = _snapshot_row(snapshot)
             session.add(row)
             return row.id
+
+
+async def _locked_run(session: AsyncSession, run_id: str) -> models.RemediationRun:
+    run = await session.get(models.RemediationRun, run_id, with_for_update=True)
+    if run is None:
+        message = f"no remediation run {run_id!r}"
+        raise RunNotFoundError(message)
+    return run
+
+
+def _snapshot_row(snapshot: Snapshot) -> models.ConfigSnapshot:
+    return models.ConfigSnapshot(
+        id=new_id(),
+        device_id=snapshot.device_id,
+        kind=snapshot.kind,
+        format=snapshot.format,
+        source=snapshot.source,
+        body_sha256=hashlib.sha256(snapshot.body.encode()).hexdigest(),
+        body_inline=snapshot.body,
+        dump=dict(snapshot.dump),
+        device_fingerprint=snapshot.device_fingerprint,
+    )
 
 
 def _apply(run: models.RemediationRun, update: RunUpdate) -> None:
