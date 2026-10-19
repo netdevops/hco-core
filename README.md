@@ -457,9 +457,10 @@ model. Compile a graph with a checkpointer, and start it with `start_run()`.
 Any error from the source of truth, the device, the engine, or a plugin also
 ends the run in `BLOCKED`, with the error in `remediation_run.error`. A device
 that is not the device of the run, and a config with a NUL character, do the
-same. The graph input is `run_id`. A run that left `DRAFT` does not start
-again, and a node that runs again writes no second row. `build_collect_graph()` ends a run that passes the
-gate. `add_collect_nodes()` sends it to a node that you name.
+same. The graph input is `run_id`. A run past `COLLECTING` does not start
+again, and a node that runs again writes no second row.
+`build_collect_graph()` ends a run that passes the gate. `add_collect_nodes()`
+sends it to a node that you name.
 
 `build_review_graph(deps, *, assessment=None)` adds the approval step after
 the gate. Its `deps` is an `ApprovalDeps`, which also holds the approval

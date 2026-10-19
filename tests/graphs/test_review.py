@@ -239,7 +239,7 @@ def test_the_plugins_and_tag_rules_shape_the_remediation(
 def test_a_second_start_on_the_thread_writes_nothing(
     runner: asyncio.Runner, world: World
 ) -> None:
-    """A run that left `DRAFT` does not start again, and keeps its rows."""
+    """A run past `COLLECTING` does not start again, and keeps its rows."""
     graph = start(runner, world)
     runner.run(start_run(graph, world.state, "thread-1"))
 
