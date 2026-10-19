@@ -207,7 +207,7 @@ async def _collect(state: ReviewState, deps: ReviewDeps) -> _Collected:
     return _Collected(device, running_dump, intended_dump, running_id, intended_id)
 
 
-def route_after_collection(state: ReviewState) -> Literal["blocked", "pass"]:
+def route_on_errors(state: ReviewState) -> Literal["blocked", "pass"]:
     """Send a run with an error to `blocked`."""
     return "blocked" if state.get("errors") else "pass"
 
@@ -312,11 +312,6 @@ async def evaluate_policy(state: ReviewState, deps: ReviewDeps) -> ReviewState:
 
 def _tier(name: str | None) -> RiskTier | None:
     return None if name is None else RiskTier[name]
-
-
-def route_after_policy(state: ReviewState) -> Literal["blocked", "pass"]:
-    """Send a run with an error to `blocked`."""
-    return "blocked" if state.get("errors") else "pass"
 
 
 async def notify_pending(state: ReviewState, deps: ReviewDeps) -> ReviewState:
@@ -454,7 +449,7 @@ def build_review_graph(
     graph.add_edge(START, "collect_running")
     graph.add_conditional_edges(
         "collect_running",
-        route_after_collection,
+        route_on_errors,
         {"blocked": "blocked", "pass": "build_remediation"},
     )
     graph.add_conditional_edges(
@@ -466,7 +461,7 @@ def build_review_graph(
         graph.add_edge(exit_, "evaluate_policy")
     graph.add_conditional_edges(
         "evaluate_policy",
-        route_after_policy,
+        route_on_errors,
         {"blocked": "blocked", "pass": "notify_pending"},
     )
     graph.add_edge("notify_pending", "request_approval")
