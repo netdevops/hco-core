@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+from typing import Literal
 
 import pytest
 from sqlalchemy import Engine, text
@@ -11,7 +12,13 @@ from hco_core.domain.approval import RunState
 from hco_core.domain.remediation import DumpJson
 from hco_core.domain.risk import RiskTier
 from hco_core.services.audit import Actor
-from hco_core.services.runs import RunNotFoundError, RunRepository, RunUpdate, Snapshot
+from hco_core.services.runs import (
+    RunNotFoundError,
+    RunRepository,
+    RunStateError,
+    RunUpdate,
+    Snapshot,
+)
 from tests.conftest import REQUESTER
 
 GRAPH = Actor("hco-core", "system", "api")
@@ -214,3 +221,35 @@ def test_a_snapshot_stores_the_body_digest_and_the_dump(
         BODY,
         DUMP,
     )
+
+
+def snapshot_of(
+    device_id: str, kind: Literal["running", "intended", "future"]
+) -> Snapshot:
+    """Return an empty snapshot of the kind."""
+    return Snapshot(device_id=device_id, kind=kind, body=BODY, dump=DUMP)
+
+
+def test_the_guarded_writes_refuse_a_run_in_another_state(
+    runner: asyncio.Runner, runs: RunRepository, device_id: str
+) -> None:
+    """Collection needs `DRAFT` or `COLLECTING`, and remediation needs `COLLECTING`."""
+    change_set_id = runner.run(runs.create_change_set("change", REQUESTER_ACTOR))
+    run_id = runner.run(runs.create_run(change_set_id, device_id, "thread-1", GRAPH))
+    future = snapshot_of(device_id, "future")
+    with pytest.raises(RunStateError, match="needs COLLECTING"):
+        runner.run(runs.record_remediation(run_id, future, RunUpdate(), GRAPH))
+    blocked = RunUpdate(state=RunState.BLOCKED)
+    assert not runner.run(
+        runs.update_run(run_id, blocked, GRAPH, only_from={RunState.COLLECTING})
+    )
+    assert runner.run(runs.update_run(run_id, blocked, GRAPH))
+    running, intended = (
+        snapshot_of(device_id, "running"),
+        snapshot_of(device_id, "intended"),
+    )
+    with pytest.raises(RunStateError, match="needs DRAFT"):
+        runner.run(runs.record_collection(run_id, running, intended, GRAPH))
+    assert runner.run(runs.get_run(run_id)).state is RunState.BLOCKED
+    with pytest.raises(RunNotFoundError):
+        runner.run(runs.get_run("missing"))
