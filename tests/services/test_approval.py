@@ -236,16 +236,38 @@ def test_one_person_in_another_case_is_a_duplicate(
 
 
 @pytest.mark.parametrize(
-    "actor", ["alice\u200b", "bo\u200db", "\ufeffbob", "bob\u00ad"]
+    "actor",
+    [
+        "alice\u200b",
+        "bo\u200db",
+        "\ufeffbob",
+        "bob\u00ad",
+        "alice\x07",
+        "al\tice",
+        "ali\x00ce",
+        "alice\u034f",
+        "alice\u3164",
+        "alice\ufe0f",
+        "alice\U000e0041",
+        "al\u00a0ice",
+    ],
 )
-def test_a_name_with_a_format_character_is_refused(
-    runner: asyncio.Runner, service: ApprovalService, change_set_id: str, actor: str
+def test_a_name_with_an_invisible_or_control_character_is_refused(
+    runner: asyncio.Runner,
+    service: ApprovalService,
+    change_set_id: str,
+    engine: Engine,
+    actor: str,
 ) -> None:
-    """An invisible character cannot make a second identity."""
+    """An invisible or control character cannot make a second identity."""
     request = open_request(runner, service, change_set_id)
 
     with pytest.raises(InvalidActorError):
         runner.run(service.decide(request.id, actor, Decision.APPROVE, "api", ""))
+    with engine.connect() as connection:
+        assert (
+            connection.scalar(text("SELECT count(*) FROM hco.approval_decision")) == 0
+        )
 
 
 def test_concurrent_approvals_resume_once(
