@@ -421,6 +421,13 @@ rows itself.
   one for `LOW` and `MEDIUM`, two for `HIGH` and `CRITICAL`.
 - When a decision closes the request, `decide()` calls the `resume` callback
   one time. Phase 1 does not check roles.
+- The service also refuses with these typed errors:
+  - `InvalidActorError`: a name is empty, has white space at an end, or has
+    a control or invisible character.
+  - `ApprovalClosedError`: the request is not pending, or it expired.
+  - `QuorumMismatchError`: a later `upsert_request()` asks for more approvals
+    than the open request needs. The count of an open request cannot go up.
+  - `NaiveExpiryError`: `expires_at` has no time zone.
 
 ## Runs and notifications
 

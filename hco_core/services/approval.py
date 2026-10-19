@@ -166,9 +166,16 @@ class ApprovalService:
             ).scalar_one()
             _check_requester(requester, row.requester)
             if row.required_count < quorum:
+                reason = (
+                    f"risk tier {tier.name} needs {quorum}"
+                    if quorum == APPROVALS_BY_TIER[tier]
+                    else f"this call asks for {quorum}"
+                )
+                approvals = "approval" if row.required_count == 1 else "approvals"
                 message = (
-                    f"approval request {row.id!r} needs {row.required_count} "
-                    f"approvals, and this call asks for {quorum}"
+                    f"approval request {row.id!r} was opened for "
+                    f"{row.required_count} {approvals}; {reason}, and the count "
+                    "of an open request cannot go up"
                 )
                 raise QuorumMismatchError(message)
             return _to_request(row)

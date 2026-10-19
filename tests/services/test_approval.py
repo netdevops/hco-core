@@ -142,19 +142,31 @@ def test_upsert_never_changes_the_requester_of_a_request(
         )
 
 
-@pytest.mark.parametrize(("tier", "count"), [(RiskTier.CRITICAL, 1), (RiskTier.LOW, 5)])
-def test_upsert_refuses_a_higher_quorum_for_an_open_request(
+@pytest.mark.parametrize(
+    ("tier", "count", "reason"),
+    [
+        (RiskTier.HIGH, 1, "risk tier HIGH needs 2"),
+        (RiskTier.LOW, 5, "this call asks for 5"),
+    ],
+)
+def test_upsert_refuses_a_higher_quorum_for_an_open_request(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
     runner: asyncio.Runner,
     service: ApprovalService,
     change_set_id: str,
     tier: RiskTier,
     count: int,
+    reason: str,
 ) -> None:
-    """A later call cannot keep a lower quorum without an error."""
-    open_request(runner, service, change_set_id)
+    """A later call cannot keep a lower quorum, and the error says why."""
+    open_request(runner, service, change_set_id, RiskTier.MEDIUM)
 
-    with pytest.raises(QuorumMismatchError, match="1"):
+    with pytest.raises(QuorumMismatchError) as refused:
         runner.run(service.upsert_request(change_set_id, tier, count, REQUESTER, LATER))
+
+    assert str(refused.value).endswith(
+        f"was opened for 1 approval; {reason}, and the count of an open request "
+        "cannot go up"
+    )
 
 
 def test_upsert_keeps_a_request_with_a_higher_quorum(
