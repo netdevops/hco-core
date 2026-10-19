@@ -141,7 +141,7 @@ def test_an_upsert_cannot_change_the_requester(
 
 
 @pytest.mark.parametrize(
-    "actor", ["alice ", " alice", "", "alice\t", "\talice", "alice\n"]
+    "actor", ["alice ", " alice", "", "alice\t", "\talice", "alice\n", "alice\u00a0"]
 )
 def test_an_actor_with_padding_or_no_text_is_refused(
     engine: Engine, approval_request: str, actor: str

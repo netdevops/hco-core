@@ -64,7 +64,7 @@ def one_of(name: str, column: str, values: Sequence[str]) -> CheckConstraint:
 def trimmed(column: str) -> CheckConstraint:
     """Return a `CHECK` that refuses white space at an end and an empty name."""
     return CheckConstraint(
-        f"{column} !~ '^[[:space:]]' AND {column} !~ '[[:space:]]$' AND {column} <> ''",
+        f"{column} !~ '^[[:space:]\\u00a0]' AND {column} !~ '[[:space:]\\u00a0]$' AND {column} <> ''",
         name=f"{column}_trimmed",
     )
 
