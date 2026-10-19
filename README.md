@@ -439,6 +439,33 @@ rows itself.
   channel, and purpose. A later call updates the message. If a send failed,
   the ledger does not send it again.
 
+## The review graph
+
+`hco_core.graphs.review.build_review_graph(deps)` returns the LangGraph graph
+of one run. Compile it with a checkpointer, and start it with `start_run()`.
+The graph does not call a model.
+
+1. `collect_running` reads the device and its intended config from the source
+   of truth, and the running config from the device.
+2. `build_remediation` builds the remediation, the rollback, the future config,
+   and the config-derived facts in `evidence["config_derived"]`.
+3. The convergence gate sends a remediation with an unresolved negation to
+   `blocked`. No assessment node runs then.
+4. `evaluate_policy` sets the final risk tier. The tier is never below the
+   floor. With no assessment, the tier is `HIGH` and `unknowns` holds
+   `no risk assessment`.
+5. `notify_pending` sends one message on each channel.
+6. `request_approval` opens the approval request and parks the run at its one
+   `interrupt()`. Resume it with `Command(resume={"decision", "actor",
+   "comment"})`.
+7. `record_decision` sets `APPROVED` or `REJECTED`, and `notify_decided` sends
+   one more message.
+
+An error from the source of truth, an unreachable device, and two different
+drivers end the run in `BLOCKED`, with the error in `remediation_run.error`.
+An assessment layer adds its nodes with the `assessment` hook. The hook returns
+the names of its first and last node.
+
 ## Requirements
 
 Python 3.12 to 3.14.

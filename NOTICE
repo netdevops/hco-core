@@ -15,6 +15,7 @@ Permissive (MIT, Apache-2.0, BSD-3-Clause, PSF-2.0)
   alembic            MIT                  https://github.com/sqlalchemy/alembic
   structlog          MIT OR Apache-2.0    https://github.com/hynek/structlog
   python-ulid        MIT                  https://github.com/mdomke/python-ulid
+  langgraph          MIT                  https://github.com/langchain-ai/langgraph
 
 These impose no obligation beyond attribution.
 
