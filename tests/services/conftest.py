@@ -12,7 +12,6 @@ from hco_core.db.session import create_database_engine, create_sessionmaker
 from hco_core.settings import CoreSettings
 
 REQUESTER = "alice"
-DEVICE_ID = "01JDEVICE00000000000000000"
 CHANGE_SET_ID = "01JCHANGESET0000000000000A"
 
 
@@ -42,22 +41,6 @@ def sessions(
     engine = create_database_engine(CoreSettings(database_url=SecretStr(database_url)))
     yield create_sessionmaker(engine)
     runner.run(engine.dispose())
-
-
-@pytest.fixture
-def device_id(engine: Engine, clean_tables: None) -> str:
-    """Insert one device."""
-    del clean_tables
-    with engine.begin() as connection:
-        connection.execute(
-            text(
-                "INSERT INTO hco.device (id, sot_name, sot_device_id, name, "
-                "platform_name, mgmt_address) VALUES (:id, 'yaml', 'r1', 'r1', "
-                "'CISCO_IOS', '192.0.2.1')"
-            ),
-            {"id": DEVICE_ID},
-        )
-    return DEVICE_ID
 
 
 @pytest.fixture
