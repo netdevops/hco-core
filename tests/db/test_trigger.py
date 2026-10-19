@@ -140,12 +140,16 @@ def test_an_upsert_cannot_change_the_requester(
         )
 
 
-@pytest.mark.parametrize("actor", ["alice ", " alice", ""])
+@pytest.mark.parametrize(
+    "actor", ["alice ", " alice", "", "alice\t", "\talice", "alice\n"]
+)
 def test_an_actor_with_padding_or_no_text_is_refused(
     engine: Engine, approval_request: str, actor: str
 ) -> None:
     """White space cannot make the requester look like another person."""
-    with pytest.raises(IntegrityError, match="ck_approval_decision_actor_trimmed"):
+    with pytest.raises(
+        IntegrityError, match='constraint "ck_approval_decision_actor_trimmed"'
+    ):
         decide(engine, "01JDECISION00000000000000A", approval_request, actor)
 
 
@@ -168,6 +172,10 @@ PADDED_REQUEST = (
     ("statement", "constraint"),
     [
         (PADDED_CHANGE_SET, "ck_change_set_requested_by_trimmed"),
+        (
+            PADDED_CHANGE_SET.replace("'alice '", "E'alice\\t'"),
+            "ck_change_set_requested_by_trimmed",
+        ),
         (PADDED_REQUEST, "ck_approval_request_requester_trimmed"),
     ],
 )
@@ -175,5 +183,8 @@ def test_a_requester_with_padding_is_refused(
     engine: Engine, statement: str, constraint: str
 ) -> None:
     """The requester names have no padding, so the trigger compares like with like."""
-    with pytest.raises(IntegrityError, match=constraint), engine.begin() as connection:
+    with (
+        pytest.raises(IntegrityError, match=f'constraint "{constraint}"'),
+        engine.begin() as connection,
+    ):
         connection.execute(text(statement))

@@ -80,17 +80,19 @@ FOR EACH ROW EXECUTE FUNCTION hco.reject_requester_change()
 
 
 def trimmed(table: str, column: str) -> sa.CheckConstraint:
-    """Return the named `CHECK` that refuses padding and an empty name."""
+    """Return the named `CHECK` that refuses white space at an end and an empty name."""
     return sa.CheckConstraint(
-        f"{column} = btrim({column}) AND {column} <> ''",
-        name=f"ck_{table}_{column}_trimmed",
+        f"{column} !~ '^[[:space:]]' AND {column} !~ '[[:space:]]$' AND {column} <> ''",
+        name=op.f(f"ck_{table}_{column}_trimmed"),
     )
 
 
 def one_of(table: str, column: str, values: Sequence[str]) -> sa.CheckConstraint:
     """Return the named `CHECK` that holds the column to the values."""
     quoted = ", ".join(f"'{value}'" for value in values)
-    return sa.CheckConstraint(f"{column} IN ({quoted})", name=f"ck_{table}_{column}")
+    return sa.CheckConstraint(
+        f"{column} IN ({quoted})", name=op.f(f"ck_{table}_{column}")
+    )
 
 
 def shared_columns(table: str) -> list[SchemaItem]:
@@ -158,7 +160,7 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "platform_name = upper(platform_name) AND platform_name !~ '^[0-9]+$'",
-            name="ck_device_platform_name",
+            name=op.f("ck_device_platform_name"),
         ),
         one_of("device", "config_format", ("cli", "xml", "json")),
         one_of("device", "criticality", ("low", "normal", "high", "critical")),

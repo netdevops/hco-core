@@ -100,7 +100,7 @@ def test_the_column_refuses_a_value_or_a_lower_case_name(
 ) -> None:
     """A direct INSERT past `PlatformName` cannot store a value or a lower-case name."""
     with (
-        pytest.raises(IntegrityError, match="ck_device_platform_name"),
+        pytest.raises(IntegrityError, match='constraint "ck_device_platform_name"'),
         engine.begin() as connection,
     ):
         connection.execute(

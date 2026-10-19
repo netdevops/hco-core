@@ -6,7 +6,7 @@ from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.migration import MigrationContext
 from pydantic import SecretStr
-from sqlalchemy import Engine, create_engine, inspect, text
+from sqlalchemy import CheckConstraint, Engine, create_engine, inspect, text
 from sqlalchemy.dialects.postgresql import TIMESTAMP
 
 from hco_core.db.migrate import ALEMBIC_INI, downgrade, upgrade
@@ -120,3 +120,20 @@ def test_alembic_without_a_connection_names_the_migrate_functions() -> None:
     """The `alembic` command alone gets a clear error, not a `KeyError`."""
     with pytest.raises(RuntimeError, match=r"hco_core\.db\.migrate\.upgrade\(\)"):
         command.upgrade(Config(ALEMBIC_INI), "head")
+
+
+def test_the_check_names_match_the_models(engine: Engine) -> None:
+    """Each `CHECK` in the database has the name that the models give it."""
+    inspector = inspect(engine)
+    for table in Base.metadata.sorted_tables:
+        expected = {
+            constraint.name
+            for constraint in table.constraints
+            if isinstance(constraint, CheckConstraint)
+        }
+        stored = {
+            check["name"]
+            for check in inspector.get_check_constraints(table.name, "hco")
+        }
+
+        assert stored == expected, table.name
