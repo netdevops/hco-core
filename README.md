@@ -293,14 +293,15 @@ mismatch.
 
 ## Development adapters
 
-`hco_core.adapters` holds three adapters that need no external service. Use
+`hco_core.adapters` holds four adapters that need no external service. Use
 them for development and for tests.
 
 - `YamlSourceOfTruth(path)` reads one inventory file on each call.
 - `EnvSecretsProvider()` reads credentials from environment variables.
 - `MockConnectionDriver(transcripts_dir, token_key=key)` replays transcripts.
+- `LogChannel()` writes each notification to the log.
 - `hco_core.adapters.registry` selects an adapter by its name: `yaml`, `env`,
-  or `mock`. It holds built-in factories only. An unknown name gives an error
+  `mock`, or `log`. It holds built-in factories only. An unknown name gives an error
   that lists the known names.
 
 An inventory file holds devices and topology:
@@ -402,6 +403,28 @@ one with its default.
   object and a settings error do not show them.
 - `hco_core.logging.configure_logging(settings)` sends structlog and
   standard-library log lines to stdout, as JSON or for a console.
+
+## Approvals, runs, and notifications
+
+`hco_core.services` owns the writes of a run. Each surface, such as the API or
+the CLI, calls these services and does not write the rows itself.
+
+- `ApprovalService.upsert_request()` opens one request for each change set. It
+  copies the requester from `change_set.requested_by`. A second call returns
+  the same request and never changes the requester.
+- `ApprovalService.decide()` records one decision. It refuses the requester
+  with `RequesterMayNotApproveError` and a second decision by the same person
+  with `DuplicateDecisionError`.
+- One rejection rejects the request. The approvals close it when they reach
+  the count of the risk tier in `hco_core.policy.tiers.APPROVALS_BY_TIER`:
+  one for `LOW` and `MEDIUM`, two for `HIGH` and `CRITICAL`.
+- When a decision closes the request, `decide()` calls the `resume` callback
+  one time. Phase 1 does not check roles.
+- `RunRepository` creates and updates change sets, runs, and config
+  snapshots. Each state change writes one `audit_event` row.
+- `NotificationLedger.deliver()` sends a message one time for each run,
+  channel, and purpose. A later call updates the message. If a send failed,
+  the ledger does not send it again.
 
 ## Requirements
 
