@@ -10,9 +10,15 @@ from types import MappingProxyType
 
 from hco_core.adapters.conn.mock import MockConnectionDriver
 from hco_core.adapters.errors import AdapterConfigError
+from hco_core.adapters.notify.log import LogChannel
 from hco_core.adapters.secrets.env import EnvSecretsProvider
 from hco_core.adapters.sot.yaml_file import YamlSourceOfTruth
-from hco_core.ports import ConnectionDriver, SecretsProvider, SourceOfTruth
+from hco_core.ports import (
+    ConnectionDriver,
+    NotificationChannel,
+    SecretsProvider,
+    SourceOfTruth,
+)
 
 type Options = Mapping[str, str]
 
@@ -30,6 +36,9 @@ _CONNECTIONS: Mapping[str, Callable[[Options, bytes], ConnectionDriver]] = (
 )
 _SECRETS: Mapping[str, Callable[[Options], SecretsProvider]] = MappingProxyType(
     {"env": lambda _: EnvSecretsProvider()}
+)
+_NOTIFY: Mapping[str, Callable[[Options], NotificationChannel]] = MappingProxyType(
+    {"log": lambda _: LogChannel()}
 )
 
 
@@ -49,6 +58,11 @@ def connection(name: str, options: Options, *, token_key: bytes) -> ConnectionDr
 def secrets(name: str, options: Options) -> SecretsProvider:
     """Return the secrets provider with the name. `env` needs no option."""
     return _factory("secrets", _SECRETS, name)(options)
+
+
+def notification_channel(name: str, options: Options) -> NotificationChannel:
+    """Return the notification channel with the name. `log` needs no option."""
+    return _factory("notify", _NOTIFY, name)(options)
 
 
 def _factory[F](kind: str, factories: Mapping[str, F], name: str) -> F:
