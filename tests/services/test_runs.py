@@ -15,7 +15,9 @@ from hco_core.services.runs import RunNotFoundError, RunRepository, RunUpdate, S
 from tests.services.conftest import REQUESTER
 
 GRAPH = Actor("hco-core", "system", "api")
-REQUESTER_ACTOR = Actor(REQUESTER, "user", "cli")
+REQUESTER_ACTOR = Actor(REQUESTER, "user", "cli", request_id="req-1")
+GRAPH_COLUMNS = ("system", "api", None)
+REQUESTER_COLUMNS = ("user", "cli", "req-1")
 DUMP: DumpJson = {"lines": []}
 BODY = "hostname r1\n"
 
@@ -27,11 +29,12 @@ def runs(sessions: async_sessionmaker[AsyncSession]) -> RunRepository:
 
 
 def audit_rows(engine: Engine) -> list[tuple[object, ...]]:
-    """Return the action, object, and states of every audit event, in order."""
+    """Return the actor, action, object, states, and caller of every event, in order."""
     with engine.connect() as connection:
         rows = connection.execute(
             text(
-                "SELECT actor, action, object_type, object_id, before, after "
+                "SELECT actor, action, object_type, object_id, before, after, "
+                "actor_kind, surface, request_id "
                 "FROM hco.audit_event ORDER BY occurred_at, id"
             )
         ).all()
@@ -57,6 +60,7 @@ def test_a_change_set_holds_its_requester(
             change_set_id,
             None,
             {"state": "DRAFT"},
+            *REQUESTER_COLUMNS,
         )
     ]
 
@@ -109,6 +113,7 @@ def test_a_run_starts_in_draft_and_records_each_transition(
             run_id,
             None,
             {"state": "DRAFT"},
+            *GRAPH_COLUMNS,
         ),
         (
             "hco-core",
@@ -117,6 +122,7 @@ def test_a_run_starts_in_draft_and_records_each_transition(
             run_id,
             {"state": "DRAFT"},
             {"state": "COLLECTING"},
+            *GRAPH_COLUMNS,
         ),
         (
             "hco-core",
@@ -125,6 +131,7 @@ def test_a_run_starts_in_draft_and_records_each_transition(
             run_id,
             {"state": "COLLECTING"},
             {"state": "AWAITING_APPROVAL"},
+            *GRAPH_COLUMNS,
         ),
     ]
 
@@ -158,6 +165,7 @@ def test_a_change_set_transition_is_recorded(
         change_set_id,
         {"state": "DRAFT"},
         {"state": "APPROVED"},
+        *GRAPH_COLUMNS,
     )
 
 

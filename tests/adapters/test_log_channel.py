@@ -31,3 +31,13 @@ def test_send_and_update_write_one_line_each() -> None:
     assert all(line["external_id"] == handle.external_id for line in lines)
     assert all(line["title"] == MESSAGE.title for line in lines)
     assert all(line["run_id"] == "run-1" for line in lines)
+
+
+def test_metadata_is_not_logged() -> None:
+    """The log line holds no field of `metadata`."""
+    message = Notification(title="t", body="b", metadata={"token": "s3cret"})
+    with capture_logs() as lines:
+        asyncio.run(LogChannel().send(message))
+
+    assert "metadata" not in lines[0]
+    assert "s3cret" not in repr(lines)

@@ -7,7 +7,12 @@ from hco_core.domain.notify import DeliveryHandle, Notification
 
 
 class LogChannel:
-    """Write each notification to the log. For development and tests."""
+    """Write each notification to the log. For development and tests.
+
+    The line holds `title` and `body` as they are, and never `metadata`. A
+    caller must not put device output or configuration text in `title` or
+    `body`, because all device output is untrusted and a log must not hold it.
+    """
 
     def __init__(self) -> None:
         self._log = structlog.get_logger(__name__)

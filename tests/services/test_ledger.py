@@ -6,6 +6,7 @@ from typing import override
 import pytest
 from sqlalchemy import Engine, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from structlog.testing import capture_logs
 
 from hco_core.domain.notify import DeliveryHandle, Notification
 from hco_core.ports import NotificationChannel
@@ -147,11 +148,81 @@ def test_a_failed_send_is_recorded_and_never_sent_again(
 
     with pytest.raises(ConnectionError):
         runner.run(ledger.deliver(run_id, "recording", "pending", MESSAGE))
-    assert runner.run(ledger.deliver(run_id, "recording", "pending", MESSAGE)) is None
+    with capture_logs() as lines:
+        assert (
+            runner.run(ledger.deliver(run_id, "recording", "pending", MESSAGE)) is None
+        )
 
     assert len(channel.sent) == 1
     assert channel.updated == []
     assert ledger_rows(engine) == [("pending", "failed", None, False)]
+    assert lines == [not_sent_warning(run_id, "failed")]
+
+
+def not_sent_warning(run_id: str, state: str) -> dict[str, object]:
+    """Return the log line of a notification that the ledger does not send."""
+    return {
+        "event": "notification.not_sent",
+        "log_level": "warning",
+        "run_id": run_id,
+        "channel": "recording",
+        "purpose": "pending",
+        "state": state,
+    }
+
+
+def test_a_pending_row_without_a_handle_is_not_sent_and_is_logged(
+    runner: asyncio.Runner,
+    sessions: async_sessionmaker[AsyncSession],
+    engine: Engine,
+    run_id: str,
+) -> None:
+    """A send that stopped before it returned is not sent again, and a warning says so."""
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO hco.notification_delivery "
+                "(id, run_id, channel, purpose, state) "
+                "VALUES ('01JLEDGERROW00000000000000', :run_id, 'recording', "
+                "'pending', 'pending')"
+            ),
+            {"run_id": run_id},
+        )
+    channel = RecordingChannel(engine)
+    ledger = NotificationLedger(sessions, {"recording": channel})
+
+    with capture_logs() as lines:
+        assert (
+            runner.run(ledger.deliver(run_id, "recording", "pending", MESSAGE)) is None
+        )
+
+    assert channel.sent == []
+    assert channel.updated == []
+    assert lines == [not_sent_warning(run_id, "pending")]
+
+
+def test_concurrent_deliveries_send_once(
+    runner: asyncio.Runner,
+    sessions: async_sessionmaker[AsyncSession],
+    engine: Engine,
+    run_id: str,
+) -> None:
+    """Five calls at the same time give one send and one row; a later call updates."""
+    channel = RecordingChannel(engine)
+    ledger = NotificationLedger(sessions, {"recording": channel})
+
+    async def deliver_five() -> list[DeliveryHandle | None]:
+        return await asyncio.gather(
+            *(ledger.deliver(run_id, "recording", "pending", MESSAGE) for _ in range(5))
+        )
+
+    runner.run(deliver_five())
+    updates_before = len(channel.updated)
+    runner.run(ledger.deliver(run_id, "recording", "pending", MESSAGE))
+
+    assert channel.sent == [MESSAGE]
+    assert len(ledger_rows(engine)) == 1
+    assert len(channel.updated) == updates_before + 1
 
 
 def test_an_unknown_channel_is_named(

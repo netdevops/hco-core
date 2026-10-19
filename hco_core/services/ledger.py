@@ -6,6 +6,7 @@ channel, and purpose makes sure that a message goes out at most once.
 
 from collections.abc import Mapping
 
+import structlog
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -30,6 +31,7 @@ class NotificationLedger:
     ) -> None:
         self._sessions = sessions
         self._channels = channels
+        self._log = structlog.get_logger(__name__)
 
     async def deliver(
         self, run_id: str, channel: str, purpose: str, message: Notification
@@ -37,8 +39,8 @@ class NotificationLedger:
         """Send the message on the first call, and update it on a later call.
 
         The ledger row commits before `send()`. A row without a handle means an
-        earlier send failed or did not finish, so nothing goes out again and
-        the return is `None`.
+        earlier send failed or did not finish, so nothing goes out again, a
+        `notification.not_sent` warning names the row, and the return is `None`.
 
         Raises:
             UnknownChannelError: If no configured channel has the name.
@@ -67,7 +69,9 @@ class NotificationLedger:
                 existing = (
                     await session.execute(
                         select(
-                            NotificationDelivery.id, NotificationDelivery.handle
+                            NotificationDelivery.id,
+                            NotificationDelivery.handle,
+                            NotificationDelivery.state,
                         ).where(
                             NotificationDelivery.run_id == run_id,
                             NotificationDelivery.channel == channel,
@@ -77,7 +81,16 @@ class NotificationLedger:
                 ).one()
         if claimed is not None:
             return await self._send(target, claimed, message)
-        if existing is None or existing.handle is None:
+        if existing is None:
+            return None
+        if existing.handle is None:
+            await self._log.awarning(
+                "notification.not_sent",
+                run_id=run_id,
+                channel=channel,
+                purpose=purpose,
+                state=existing.state,
+            )
             return None
         handle = DeliveryHandle.model_validate(existing.handle)
         await target.update(handle, message)

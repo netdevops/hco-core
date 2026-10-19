@@ -10,11 +10,15 @@ from hco_core.domain.approval import ActorKind, Surface
 
 @dataclass(frozen=True, slots=True)
 class Actor:
-    """Who did something, and on which surface."""
+    """Who did something, on which surface, and in which request.
+
+    `request_id` is `None` only when no HTTP request started the action.
+    """
 
     name: str
     kind: ActorKind
     surface: Surface
+    request_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -41,5 +45,6 @@ def add_audit_event(session: AsyncSession, entry: AuditEntry) -> None:
             object_id=entry.object_id,
             before=entry.before,
             after=entry.after,
+            request_id=entry.actor.request_id,
         )
     )
