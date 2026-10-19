@@ -1,2 +1,2 @@
-Added the review graph: it collects the configs, builds the remediation, blocks an unresolved negation, and parks the run for approval.
-Added a default for a run with no risk assessment: the run waits for approval at the HIGH tier, and its unknowns say so.
+Added the first part of the review graph: it collects the configs from the source of truth and the device, and builds the remediation.
+Added the convergence gate: a remediation with an unresolved negation, an unreachable device, or a source of truth error ends the run in BLOCKED.

@@ -441,16 +441,26 @@ rows itself.
 
 ## The review graph
 
-`hco_core.graphs.review.build_review_graph(deps)` returns the LangGraph graph
-of one run. Compile it with a checkpointer, and start it with `start_run()`.
-The graph does not call a model.
+`hco_core.graphs.review` holds the LangGraph graph of one run. No node calls a
+model. Compile a graph with a checkpointer, and start it with `start_run()`.
 
 1. `collect_running` reads the device and its intended config from the source
-   of truth, and the running config from the device.
-2. `build_remediation` builds the remediation, the rollback, the future config,
-   and the config-derived facts in `evidence["config_derived"]`.
+   of truth, and the running config from the device. It stores both snapshots.
+2. `build_remediation` builds the remediation, the rollback, and the future
+   config, with the plugins and the tag rules of `ReviewDeps`. It stores the
+   future snapshot, and puts the config-derived facts in
+   `evidence["config_derived"]`.
 3. The convergence gate sends a remediation with an unresolved negation to
-   `blocked`. No assessment node runs then.
+   `blocked`. Nothing after the gate runs then.
+
+An error from the source of truth, an unreachable device, and two different
+drivers also end the run in `BLOCKED`, with the error in
+`remediation_run.error`. `build_collect_graph()` ends a run that passes the
+gate. `add_collect_nodes()` sends it to a node that you name.
+
+`build_review_graph(deps, *, assessment=None)` adds the approval step after
+the gate:
+
 4. `evaluate_policy` sets the final risk tier. The tier is never below the
    floor. With no assessment, the tier is `HIGH` and `unknowns` holds
    `no risk assessment`.
@@ -458,11 +468,9 @@ The graph does not call a model.
 6. `request_approval` opens the approval request and parks the run at its one
    `interrupt()`. Resume it with `Command(resume={"decision", "actor",
    "comment"})`.
-7. `record_decision` sets `APPROVED` or `REJECTED`, and `notify_decided` sends
-   one more message.
+7. `record_decision` sets `APPROVED` or `REJECTED`. A payload that is not
+   valid ends the run in `BLOCKED`. `notify_decided` sends one more message.
 
-An error from the source of truth, an unreachable device, and two different
-drivers end the run in `BLOCKED`, with the error in `remediation_run.error`.
 An assessment layer adds its nodes with the `assessment` hook. The hook returns
 the names of its first and last node.
 

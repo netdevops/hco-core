@@ -1,13 +1,13 @@
 """The review graph: collect, remediate, gate, park for a human, record the decision.
 
 No node calls a model. The convergence gate blocks a remediation with an
-unresolved negation before any assessment node runs. Every config in the state
-is `Dump` JSON. Each node that changes the run state writes it through
+unresolved negation before any assessment node runs. Every config in the state is
+`Dump` JSON. Each node that changes the run state writes it through
 `RunRepository` immediately before it returns.
 """
 
 import operator
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import partial
@@ -35,7 +35,7 @@ from hco_core.domain.risk import RiskTier
 from hco_core.domain.secrets import SecretPurpose
 from hco_core.engine.errors import EngineError
 from hco_core.engine.fingerprints import change_fingerprint
-from hco_core.engine.remediation import build_bundle, parse
+from hco_core.engine.remediation import build_bundle, parse, render_lines
 from hco_core.engine.views import config_derived
 from hco_core.policy.tiers import APPROVALS_BY_TIER
 from hco_core.ports import ConnectionDriver, SecretsProvider, SourceOfTruth
@@ -51,6 +51,15 @@ DURABILITY: Final[Durability] = "sync"
 """The run parks for a human, so each step commits its checkpoint before the next."""
 NO_ASSESSMENT: Final = "no risk assessment"
 GRAPH_ACTOR: Final = Actor("hco-core", "system", "api")
+
+type PluginFactory = Callable[[DeviceRecord], Iterable[Callable[..., None]]]
+"""Return the remediation plugins of the device. Each takes the remediation tree."""
+
+
+def no_plugins(device: DeviceRecord) -> tuple[()]:
+    """Return no remediation plugins."""
+    del device
+    return ()
 
 
 def merge_dicts(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
@@ -116,6 +125,8 @@ class ReviewDeps:
     runs: RunRepository
     approvals: ApprovalService
     ledger: NotificationLedger
+    plugins: PluginFactory = no_plugins
+    tag_rules: tuple[Mapping[str, object], ...] = ()
     channels: tuple[str, ...] = ("log",)
     approval_ttl: timedelta = timedelta(hours=72)
     actor: Actor = GRAPH_ACTOR
@@ -219,16 +230,35 @@ async def build_remediation(state: ReviewState, deps: ReviewDeps) -> ReviewState
     platform_name = _need(state.get("platform_name"), "platform_name")
     device = _device(state)
     try:
-        bundle = build_bundle(platform_name, running_dump, intended_dump)
+        bundle = build_bundle(
+            platform_name,
+            running_dump,
+            intended_dump,
+            plugins=tuple(deps.plugins(device)),
+            tag_rules=deps.tag_rules,
+        )
+        future_text = "".join(
+            f"{line}\n" for line in render_lines(platform_name, bundle.future_dump)
+        )
         derived = config_derived(bundle, running_dump, device)
         fingerprint = change_fingerprint(bundle.remediation_dump)
     except EngineError as error:
         return {"errors": [f"build_remediation: {error}"]}
     future_report = bundle.future_report.model_dump(mode="json")
+    future_id = await deps.runs.add_snapshot(
+        Snapshot(
+            device_id=_need(state.get("device_id"), "device_id"),
+            kind="future",
+            body=future_text,
+            dump=bundle.future_dump,
+            source="sot",
+        )
+    )
     await deps.runs.update_run(
         _need(state.get("run_id"), "run_id"),
         RunUpdate(
             state=RunState.REMEDIATING,
+            future_snapshot_id=future_id,
             remediation_dump=bundle.remediation_dump,
             rollback_dump=bundle.rollback_dump,
             future_report=future_report,
@@ -375,7 +405,8 @@ def _summary(state: ReviewState, tier: str) -> str:
 async def record_decision(state: ReviewState, deps: ReviewDeps) -> ReviewState:
     """Set `APPROVED` or `REJECTED` from the resume payload.
 
-    A payload that is not a valid decision rejects the run and records why.
+    A payload that is not a valid decision never approves. The run ends in
+    `BLOCKED` with the error recorded.
     """
     run_id = _need(state.get("run_id"), "run_id")
     try:
@@ -384,10 +415,10 @@ async def record_decision(state: ReviewState, deps: ReviewDeps) -> ReviewState:
         reason = f"record_decision: the resume payload is not valid: {error}"
         await deps.runs.update_run(
             run_id,
-            RunUpdate(state=RunState.REJECTED, error={"errors": [reason]}),
+            RunUpdate(state=RunState.BLOCKED, error={"errors": [reason]}),
             deps.actor,
         )
-        return {"errors": [reason], "run_state": RunState.REJECTED}
+        return {"errors": [reason], "run_state": RunState.BLOCKED}
     final = (
         RunState.APPROVED if resume.decision is Decision.APPROVE else RunState.REJECTED
     )
@@ -398,12 +429,16 @@ async def record_decision(state: ReviewState, deps: ReviewDeps) -> ReviewState:
 async def notify_decided(state: ReviewState, deps: ReviewDeps) -> ReviewState:
     """Tell each channel how the run ended, one time."""
     run_id = _need(state.get("run_id"), "run_id")
-    outcome = _need(state.get("run_state"), "run_state").lower()
+    outcome = _need(state.get("run_state"), "run_state")
+    tier = _need(state.get("risk_tier_final"), "risk_tier_final")
     actor = state.get("approval", {}).get("actor")
-    by = f" by {actor}" if isinstance(actor, str) else ""
+    by = f" Decided by {actor}." if isinstance(actor, str) else ""
     message = Notification(
-        title=f"Run {run_id} {outcome}",
-        body=f"Run {run_id} on device {_device(state).name} was {outcome}{by}.",
+        title=f"Run {run_id} is {outcome}",
+        body=(
+            f"Run {run_id} on device {_device(state).name} is {outcome}. "
+            f"Risk tier: {tier}.{by}"
+        ),
         run_id=run_id,
     )
     for channel in deps.channels:
@@ -422,6 +457,42 @@ def _need[T](value: T | None, key: str) -> T:
     return value
 
 
+def add_collect_nodes(
+    graph: StateGraph[ReviewState], deps: ReviewDeps, *, gate_passed: str
+) -> None:
+    """Add the nodes up to the convergence gate, and `blocked`.
+
+    A run that passes the gate goes to `gate_passed`. A run with an error goes
+    to `blocked`, which ends the graph.
+    """
+    nodes = {
+        "collect_running": collect_running,
+        "build_remediation": build_remediation,
+        "blocked": blocked,
+    }
+    for name, node in nodes.items():
+        graph.add_node(name, partial(node, deps=deps))  # pyright: ignore[reportUnknownMemberType]
+    graph.add_edge(START, "collect_running")
+    graph.add_conditional_edges(
+        "collect_running",
+        route_on_errors,
+        {"blocked": "blocked", "pass": "build_remediation"},
+    )
+    graph.add_conditional_edges(
+        "build_remediation",
+        route_after_convergence,
+        {"blocked": "blocked", "pass": gate_passed},
+    )
+    graph.add_edge("blocked", END)
+
+
+def build_collect_graph(deps: ReviewDeps) -> StateGraph[ReviewState]:
+    """Return the graph up to the convergence gate. A passed run ends there."""
+    graph = StateGraph(ReviewState)
+    add_collect_nodes(graph, deps, gate_passed=END)
+    return graph
+
+
 def build_review_graph(
     deps: ReviewDeps, *, assessment: AssessmentHook | None = None
 ) -> StateGraph[ReviewState]:
@@ -432,9 +503,6 @@ def build_review_graph(
     """
     graph = StateGraph(ReviewState)
     nodes = {
-        "collect_running": collect_running,
-        "build_remediation": build_remediation,
-        "blocked": blocked,
         "evaluate_policy": evaluate_policy,
         "notify_pending": notify_pending,
         "request_approval": request_approval,
@@ -446,17 +514,7 @@ def build_review_graph(
     entry, exit_ = (
         ("evaluate_policy", None) if assessment is None else assessment(graph)
     )
-    graph.add_edge(START, "collect_running")
-    graph.add_conditional_edges(
-        "collect_running",
-        route_on_errors,
-        {"blocked": "blocked", "pass": "build_remediation"},
-    )
-    graph.add_conditional_edges(
-        "build_remediation",
-        route_after_convergence,
-        {"blocked": "blocked", "pass": entry},
-    )
+    add_collect_nodes(graph, deps, gate_passed=entry)
     if exit_ is not None:
         graph.add_edge(exit_, "evaluate_policy")
     graph.add_conditional_edges(
@@ -468,7 +526,6 @@ def build_review_graph(
     graph.add_edge("request_approval", "record_decision")
     graph.add_edge("record_decision", "notify_decided")
     graph.add_edge("notify_decided", END)
-    graph.add_edge("blocked", END)
     return graph
 
 
