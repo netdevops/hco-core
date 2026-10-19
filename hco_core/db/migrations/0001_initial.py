@@ -1,4 +1,4 @@
-"""Make the eight Phase 1 tables and the self-approval trigger.
+"""Make the eight Phase 1 tables and the two self-approval triggers.
 
 Revision ID: 0001
 Revises: none
@@ -60,6 +60,31 @@ CREATE TRIGGER approval_decision_reject_self_approval
 BEFORE INSERT OR UPDATE OF request_id, actor ON hco.approval_decision
 FOR EACH ROW EXECUTE FUNCTION hco.reject_self_approval()
 """
+
+REJECT_REQUESTER_CHANGE = """
+CREATE OR REPLACE FUNCTION hco.reject_requester_change()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF NEW.requester IS DISTINCT FROM OLD.requester THEN
+    RAISE EXCEPTION 'the requester of approval request % may not change', OLD.id;
+  END IF;
+  RETURN NEW;
+END; $$ LANGUAGE plpgsql
+"""
+
+APPROVAL_REQUEST_TRIGGER = """
+CREATE TRIGGER approval_request_reject_requester_change
+BEFORE UPDATE OF requester ON hco.approval_request
+FOR EACH ROW EXECUTE FUNCTION hco.reject_requester_change()
+"""
+
+
+def trimmed(table: str, column: str) -> sa.CheckConstraint:
+    """Return the named `CHECK` that refuses padding and an empty name."""
+    return sa.CheckConstraint(
+        f"{column} = btrim({column}) AND {column} <> ''",
+        name=f"ck_{table}_{column}_trimmed",
+    )
 
 
 def one_of(table: str, column: str, values: Sequence[str]) -> sa.CheckConstraint:
@@ -131,6 +156,10 @@ def upgrade() -> None:
             name="uq_device_tenant_id_sot_name_sot_device_id",
             postgresql_nulls_not_distinct=True,
         ),
+        sa.CheckConstraint(
+            "platform_name = upper(platform_name) AND platform_name !~ '^[0-9]+$'",
+            name="ck_device_platform_name",
+        ),
         one_of("device", "config_format", ("cli", "xml", "json")),
         one_of("device", "criticality", ("low", "normal", "high", "critical")),
         schema=SCHEMA,
@@ -195,6 +224,7 @@ def upgrade() -> None:
         timestamp("scheduled_for", nullable=True),
         sa.Column("window_id", sa.String(26), nullable=True),
         foreign_key("change_set", "parent_id", "change_set"),
+        trimmed("change_set", "requested_by"),
         one_of("change_set", "transaction_class", ("strict", "best_effort")),
         schema=SCHEMA,
     )
@@ -273,6 +303,7 @@ def upgrade() -> None:
         sa.Column("interrupt_key", sa.String(64), nullable=False),
         foreign_key("approval_request", "change_set_id", "change_set"),
         sa.UniqueConstraint("change_set_id", name="uq_approval_request_change_set_id"),
+        trimmed("approval_request", "requester"),
         one_of(
             "approval_request",
             "state",
@@ -294,6 +325,7 @@ def upgrade() -> None:
         sa.UniqueConstraint(
             "request_id", "actor", name="uq_approval_decision_request_id_actor"
         ),
+        trimmed("approval_decision", "actor"),
         one_of("approval_decision", "actor_kind", ACTOR_KINDS),
         one_of("approval_decision", "decision", ("approve", "reject")),
         one_of("approval_decision", "surface", SURFACES),
@@ -301,6 +333,8 @@ def upgrade() -> None:
     )
     op.execute(REJECT_SELF_APPROVAL)
     op.execute(APPROVAL_DECISION_TRIGGER)
+    op.execute(REJECT_REQUESTER_CHANGE)
+    op.execute(APPROVAL_REQUEST_TRIGGER)
 
     op.create_table(
         "audit_event",
@@ -353,7 +387,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Drop the trigger, its function, and the tables."""
+    """Drop the triggers, their functions, and the tables."""
+    op.execute(
+        "DROP TRIGGER approval_request_reject_requester_change ON hco.approval_request"
+    )
+    op.execute("DROP FUNCTION hco.reject_requester_change()")
     op.execute(
         "DROP TRIGGER approval_decision_reject_self_approval ON hco.approval_decision"
     )

@@ -61,6 +61,13 @@ def one_of(name: str, column: str, values: Sequence[str]) -> CheckConstraint:
     return CheckConstraint(f"{column} IN ({quoted})", name=name)
 
 
+def trimmed(column: str) -> CheckConstraint:
+    """Return a `CHECK` that refuses padding and an empty name in the column."""
+    return CheckConstraint(
+        f"{column} = btrim({column}) AND {column} <> ''", name=f"{column}_trimmed"
+    )
+
+
 class Base(DeclarativeBase):
     """Give every table the schema `hco`, the shared columns, and stable names."""
 
@@ -98,6 +105,10 @@ class Device(Base):
         Index(None, "tenant_id", "platform_name"),
         Index(None, "tenant_id", "site"),
         Index(None, "tags", postgresql_using="gin"),
+        CheckConstraint(
+            "platform_name = upper(platform_name) AND platform_name !~ '^[0-9]+$'",
+            name="platform_name",
+        ),
         one_of("config_format", "config_format", ("cli", "xml", "json")),
         one_of("criticality", "criticality", ("low", "normal", "high", "critical")),
     )
@@ -161,6 +172,7 @@ class ChangeSet(Base):
         Index(None, "tenant_id", "state"),
         Index(None, "tenant_id", "requested_by"),
         one_of("transaction_class", "transaction_class", ("strict", "best_effort")),
+        trimmed("requested_by"),
     )
 
     title: Mapped[str] = mapped_column(String(255))
@@ -212,11 +224,12 @@ class RemediationRun(Base):
 
 
 class ApprovalRequest(Base):
-    """The one approval that a change set waits for."""
+    """The one approval that a change set waits for. Its requester never changes."""
 
     __tablename__ = "approval_request"
     __table_args__ = (
         UniqueConstraint("change_set_id"),
+        trimmed("requester"),
         one_of(
             "state",
             "state",
@@ -239,6 +252,7 @@ class ApprovalDecision(Base):
     __tablename__ = "approval_decision"
     __table_args__ = (
         UniqueConstraint("request_id", "actor"),
+        trimmed("actor"),
         one_of("actor_kind", "actor_kind", ACTOR_KINDS),
         one_of("decision", "decision", ("approve", "reject")),
         one_of("surface", "surface", SURFACES),
