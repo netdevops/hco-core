@@ -26,6 +26,8 @@ from hco_core.services.approval import (
     ApprovalService,
     DuplicateDecisionError,
     InvalidActorError,
+    NaiveExpiryError,
+    QuorumMismatchError,
     RequesterMayNotApproveError,
     RequesterMismatchError,
 )
@@ -140,6 +142,42 @@ def test_upsert_never_changes_the_requester_of_a_request(
         )
 
 
+@pytest.mark.parametrize(("tier", "count"), [(RiskTier.CRITICAL, 1), (RiskTier.LOW, 5)])
+def test_upsert_refuses_a_higher_quorum_for_an_open_request(
+    runner: asyncio.Runner,
+    service: ApprovalService,
+    change_set_id: str,
+    tier: RiskTier,
+    count: int,
+) -> None:
+    """A later call cannot keep a lower quorum without an error."""
+    open_request(runner, service, change_set_id)
+
+    with pytest.raises(QuorumMismatchError, match="1"):
+        runner.run(service.upsert_request(change_set_id, tier, count, REQUESTER, LATER))
+
+
+def test_upsert_keeps_a_request_with_a_higher_quorum(
+    runner: asyncio.Runner, service: ApprovalService, change_set_id: str
+) -> None:
+    """A later call with a lower quorum returns the request unchanged."""
+    first = open_request(runner, service, change_set_id, RiskTier.HIGH)
+
+    assert open_request(runner, service, change_set_id, RiskTier.LOW) == first
+
+
+def test_upsert_refuses_a_naive_expiry(
+    runner: asyncio.Runner, service: ApprovalService, change_set_id: str
+) -> None:
+    """An expiry without a time zone is refused, so it cannot move by an offset."""
+    naive = datetime(2030, 1, 1, 12, 0)  # ruff: ignore[call-datetime-without-tzinfo]
+
+    with pytest.raises(NaiveExpiryError):
+        runner.run(
+            service.upsert_request(change_set_id, RiskTier.LOW, 1, REQUESTER, naive)
+        )
+
+
 def test_upsert_refuses_a_padded_requester(
     runner: asyncio.Runner, service: ApprovalService, change_set_id: str
 ) -> None:
@@ -165,18 +203,134 @@ def test_upsert_refuses_an_unknown_change_set(
         )
 
 
-def test_the_requester_may_not_approve(
+@pytest.mark.parametrize("decision", list(Decision))
+@pytest.mark.parametrize("actor", [REQUESTER, "Alice", "ALICE", "\uff41lice"])
+def test_the_requester_may_not_decide(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
+    runner: asyncio.Runner,
+    service: ApprovalService,
+    change_set_id: str,
+    resumed: Resumed,
+    actor: str,
+    decision: Decision,
+) -> None:
+    """The requester cannot approve or reject, in any case or compatibility form."""
+    request = open_request(runner, service, change_set_id)
+
+    with pytest.raises(
+        RequesterMayNotApproveError, match="may not decide on their own change"
+    ):
+        runner.run(service.decide(request.id, actor, decision, "api", ""))
+    assert resumed == []
+
+
+@pytest.mark.parametrize("second", ["bob", "Bob", "BOB", "\uff42ob"])
+def test_one_person_in_another_case_is_a_duplicate(
+    runner: asyncio.Runner, service: ApprovalService, change_set_id: str, second: str
+) -> None:
+    """Two names that fold to one identity are one person."""
+    request = open_request(runner, service, change_set_id, RiskTier.HIGH)
+    runner.run(service.decide(request.id, "bob", Decision.APPROVE, "api", ""))
+
+    with pytest.raises(DuplicateDecisionError):
+        runner.run(service.decide(request.id, second, Decision.APPROVE, "api", ""))
+
+
+@pytest.mark.parametrize(
+    "actor", ["alice\u200b", "bo\u200db", "\ufeffbob", "bob\u00ad"]
+)
+def test_a_name_with_a_format_character_is_refused(
+    runner: asyncio.Runner, service: ApprovalService, change_set_id: str, actor: str
+) -> None:
+    """An invisible character cannot make a second identity."""
+    request = open_request(runner, service, change_set_id)
+
+    with pytest.raises(InvalidActorError):
+        runner.run(service.decide(request.id, actor, Decision.APPROVE, "api", ""))
+
+
+def test_concurrent_approvals_resume_once(
     runner: asyncio.Runner,
     service: ApprovalService,
     change_set_id: str,
     resumed: Resumed,
 ) -> None:
-    """The service refuses the requester before the database trigger does."""
+    """The row lock lets one of many final approvals close the request."""
+    request = open_request(runner, service, change_set_id)
+    approvers = [f"approver-{index}" for index in range(6)]
+
+    async def approve_all() -> list[ApprovalRequest | BaseException]:
+        return await asyncio.gather(
+            *(
+                service.decide(request.id, actor, Decision.APPROVE, "api", "")
+                for actor in approvers
+            ),
+            return_exceptions=True,
+        )
+
+    outcomes = runner.run(approve_all())
+
+    closed = [outcome for outcome in outcomes if isinstance(outcome, ApprovalRequest)]
+    refused = [
+        outcome for outcome in outcomes if isinstance(outcome, ApprovalClosedError)
+    ]
+    assert [request.state for request in closed] == [ApprovalState.APPROVED]
+    assert len(refused) == len(approvers) - 1
+    assert len(resumed) == 1
+
+
+def test_two_concurrent_approvers_fill_a_high_quorum_once(
+    runner: asyncio.Runner,
+    service: ApprovalService,
+    change_set_id: str,
+    resumed: Resumed,
+) -> None:
+    """Two approvers at the same time give one pending and one approved state."""
+    request = open_request(runner, service, change_set_id, RiskTier.HIGH)
+
+    async def approve_both() -> tuple[ApprovalRequest, ApprovalRequest]:
+        return await asyncio.gather(
+            service.decide(request.id, "bob", Decision.APPROVE, "api", ""),
+            service.decide(request.id, "carol", Decision.APPROVE, "api", ""),
+        )
+
+    states = sorted(outcome.state for outcome in runner.run(approve_both()))
+
+    assert states == [ApprovalState.APPROVED, ApprovalState.PENDING]
+    assert len(resumed) == 1
+
+
+def test_a_failed_resume_keeps_the_decision(
+    runner: asyncio.Runner,
+    sessions: async_sessionmaker[AsyncSession],
+    change_set_id: str,
+    engine: Engine,
+) -> None:
+    """The error reaches the caller, and the decision and its audit row stay."""
+
+    async def broken_resume(
+        request: ApprovalRequest, decision: ApprovalDecision
+    ) -> None:
+        await asyncio.sleep(0)
+        message = f"cannot resume {request.id} after {decision.actor}"
+        raise RuntimeError(message)
+
+    service = ApprovalService(sessions, resume=broken_resume)
     request = open_request(runner, service, change_set_id)
 
-    with pytest.raises(RequesterMayNotApproveError, match=REQUESTER):
-        runner.run(service.decide(request.id, REQUESTER, Decision.APPROVE, "api", ""))
-    assert resumed == []
+    with pytest.raises(RuntimeError, match="cannot resume"):
+        runner.run(service.decide(request.id, "bob", Decision.APPROVE, "api", ""))
+    with pytest.raises(ApprovalClosedError, match="approved"):
+        runner.run(service.decide(request.id, "carol", Decision.APPROVE, "api", ""))
+
+    with engine.connect() as connection:
+        counts = connection.execute(
+            text(
+                "SELECT (SELECT state FROM hco.approval_request), "
+                "(SELECT count(*) FROM hco.approval_decision), "
+                "(SELECT count(*) FROM hco.audit_event)"
+            )
+        ).one()
+    assert tuple(counts) == ("approved", 1, 1)
 
 
 @pytest.mark.parametrize("actor", ["", " bob", "bob ", "bob\u2003", "bob\u00a0"])

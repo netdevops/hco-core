@@ -1,8 +1,9 @@
 """Run states, approval requests, and the decisions of approvers."""
 
-from datetime import datetime
 from enum import StrEnum
 from typing import Literal
+
+from pydantic import AwareDatetime
 
 from hco_core.domain.base import BaseModel
 
@@ -57,7 +58,7 @@ class ApprovalRequest(BaseModel):
     state: ApprovalState
     required_count: int
     requester: str
-    expires_at: datetime
+    expires_at: AwareDatetime
     interrupt_key: str
 
 
