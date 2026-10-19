@@ -246,28 +246,8 @@ def _next_state(decision: Decision, approvals: int, required_count: int) -> str:
 
 
 def _to_request(row: models.ApprovalRequest) -> ApprovalRequest:
-    return ApprovalRequest.model_validate(
-        {
-            "id": row.id,
-            "change_set_id": row.change_set_id,
-            "state": row.state,
-            "required_count": row.required_count,
-            "requester": row.requester,
-            "expires_at": row.expires_at,
-            "interrupt_key": row.interrupt_key,
-        }
-    )
+    return ApprovalRequest.model_validate(row, from_attributes=True)
 
 
 def _to_decision(row: models.ApprovalDecision) -> ApprovalDecision:
-    return ApprovalDecision.model_validate(
-        {
-            "id": row.id,
-            "request_id": row.request_id,
-            "actor": row.actor,
-            "actor_kind": row.actor_kind,
-            "decision": row.decision,
-            "surface": row.surface,
-            "comment": row.comment,
-        }
-    )
+    return ApprovalDecision.model_validate(row, from_attributes=True)
