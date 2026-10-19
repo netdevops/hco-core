@@ -439,6 +439,25 @@ rows itself.
   channel, and purpose. A later call updates the message. If a send failed,
   the ledger does not send it again.
 
+## The review graph
+
+`hco_core.graphs.review` holds the LangGraph graph of one run. No node calls a
+model. Compile a graph with a checkpointer, and start it with `start_run()`.
+
+1. `collect_running` reads the device and its intended config from the source
+   of truth, and the running config from the device. It stores both snapshots.
+2. `build_remediation` builds the remediation, the rollback, and the future
+   config, with the plugins and the tag rules of `ReviewDeps`. It stores the
+   future snapshot, and puts the config-derived facts in
+   `evidence["config_derived"]`.
+3. The convergence gate sends a remediation with an unresolved negation to
+   `blocked`. Nothing after the gate runs then.
+
+An error from the source of truth, an unreachable device, and two different
+drivers also end the run in `BLOCKED`, with the error in
+`remediation_run.error`. `build_collect_graph()` ends a run that passes the
+gate. `add_collect_nodes()` sends it to a node that you name.
+
 ## Requirements
 
 Python 3.12 to 3.14.
