@@ -3,9 +3,11 @@
 No node calls a model. The convergence gate blocks a remediation with an
 unresolved negation before any assessment node runs. Every config in the state is
 `Dump` JSON. Each node that changes the run state writes it through
-`RunRepository` immediately before it returns.
+`RunRepository` immediately before it returns. The run state guards each
+write, so a node that runs again writes nothing new.
 """
 
+import asyncio
 import operator
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
@@ -24,16 +26,14 @@ from langgraph.graph.state import (  # pyright: ignore[reportMissingTypeStubs]
 from langgraph.types import Durability, interrupt
 from pydantic import JsonValue, ValidationError
 
-from hco_core.adapters.errors import AdapterError
 from hco_core.domain.approval import Decision, RunState
 from hco_core.domain.base import BaseModel
 from hco_core.domain.device import DeviceRecord
 from hco_core.domain.ids import DeviceID
 from hco_core.domain.notify import Notification
-from hco_core.domain.remediation import DumpJson
+from hco_core.domain.remediation import ConfigDerived, DumpJson, RemediationBundle
 from hco_core.domain.risk import RiskTier
 from hco_core.domain.secrets import SecretPurpose
-from hco_core.engine.errors import EngineError
 from hco_core.engine.fingerprints import change_fingerprint
 from hco_core.engine.remediation import build_bundle, parse, render_lines
 from hco_core.engine.views import config_derived
@@ -42,7 +42,7 @@ from hco_core.ports import ConnectionDriver, SecretsProvider, SourceOfTruth
 from hco_core.services.approval import ApprovalService
 from hco_core.services.audit import Actor
 from hco_core.services.ledger import NotificationLedger
-from hco_core.services.runs import RunRepository, RunUpdate, Snapshot
+from hco_core.services.runs import RunRepository, RunUpdate, RunView, Snapshot
 
 if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
@@ -51,6 +51,16 @@ DURABILITY: Final[Durability] = "sync"
 """The run parks for a human, so each step commits its checkpoint before the next."""
 NO_ASSESSMENT: Final = "no risk assessment"
 GRAPH_ACTOR: Final = Actor("hco-core", "system", "api")
+BLOCKABLE_STATES: Final = frozenset(
+    {
+        RunState.DRAFT,
+        RunState.COLLECTING,
+        RunState.REMEDIATING,
+        RunState.ASSESSING,
+        RunState.EVALUATING_POLICY,
+    }
+)
+"""The run states that `blocked` may move to `BLOCKED`. A run in another state stays."""
 
 type PluginFactory = Callable[[DeviceRecord], Iterable[Callable[..., None]]]
 """Return the remediation plugins of the device. Each takes the remediation tree."""
@@ -77,18 +87,20 @@ class ApprovalPolicy(TypedDict):
 class ReviewState(TypedDict, total=False):
     """The state of one run, as docs/spec/07 defines it.
 
-    `evidence` holds JSON from parallel assessment nodes, keyed by source. Each
-    source has its own shape, so the value type is `Any`. `errors` and
-    `unknowns` add up across nodes.
+    The input holds `run_id`, and `change_set_id` and `requested_by` for the
+    approval. `evidence` holds JSON from parallel nodes, keyed by source; each
+    source has its own shape, so the value type is `Any`. `errors` maps a node
+    name to its error, or to an empty text when the node passed, so a node that
+    runs again replaces its own entry.
     """
 
     run_id: str
     change_set_id: str
     tenant_id: str | None
     device_id: str
-    """The id of the `device` row."""
+    """The id of the `device` row, from the run."""
     sot_device_id: str
-    """The id of the device in the source of truth."""
+    """The id of the device in the source of truth, from the `device` row."""
     device: dict[str, JsonValue]
     platform_name: str
     requested_by: str
@@ -107,12 +119,14 @@ class ReviewState(TypedDict, total=False):
     risk_tier_final: str
     policy: ApprovalPolicy
     approval: dict[str, JsonValue]
-    errors: Annotated[list[str], operator.add]
+    errors: Annotated[dict[str, str], merge_dicts]
     unknowns: Annotated[list[str], operator.add]
 
 
-type AssessmentHook = Callable[[StateGraph[ReviewState]], tuple[str, str]]
-"""Add assessment nodes to the graph and return the entry and the exit node names."""
+_POLICY_FROM: Final = frozenset(
+    {RunState.REMEDIATING, RunState.ASSESSING, RunState.EVALUATING_POLICY}
+)
+_AWAIT_FROM: Final = frozenset({RunState.EVALUATING_POLICY, RunState.AWAITING_APPROVAL})
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -123,158 +137,203 @@ class ReviewDeps:
     secrets: SecretsProvider
     connection: ConnectionDriver
     runs: RunRepository
-    approvals: ApprovalService
-    ledger: NotificationLedger
     plugins: PluginFactory = no_plugins
     tag_rules: tuple[Mapping[str, object], ...] = ()
-    channels: tuple[str, ...] = ("log",)
-    approval_ttl: timedelta = timedelta(hours=72)
     actor: Actor = GRAPH_ACTOR
 
 
-class IntendedConfigMissingError(LookupError):
-    """The source of truth has no intended config for the device."""
+type AssessmentHook = Callable[[StateGraph[ReviewState]], tuple[str, str]]
+"""Add assessment nodes to the graph and return the entry and the exit node names."""
 
 
 class MissingStateError(LookupError):
     """The input or an earlier node did not set a key that a node reads."""
 
 
-class _Resume(BaseModel):
-    decision: Decision
-    actor: str
-    comment: str = ""
+class CollectionError(ValueError):
+    """The source of truth or the device gave something that the run cannot use."""
+
+
+class RunStartedError(RuntimeError):
+    """The run left `COLLECTING` before, so it does not start again."""
+
+    def __init__(self, state: RunState) -> None:
+        super().__init__(f"the run is {state}")
+        self.state = state
 
 
 @dataclass(frozen=True, slots=True)
 class _Collected:
+    view: RunView
     device: DeviceRecord
     running_dump: DumpJson
     intended_dump: DumpJson
-    running_snapshot_id: str
-    intended_snapshot_id: str
 
 
 async def collect_running(state: ReviewState, deps: ReviewDeps) -> ReviewState:
-    """Read the device and its intended config, then collect the running config."""
+    """Read the device and its intended config, then collect the running config.
+
+    A run past `COLLECTING` ends with no write. Any error ends the run in
+    `BLOCKED`, because the adapters and the device are outside HCO. A missing
+    `run_id` is a wiring error and raises `MissingStateError`.
+    """
+    run_id = _need(state.get("run_id"), "run_id")
     try:
-        collected = await _collect(state, deps)
-    except (AdapterError, EngineError, IntendedConfigMissingError, OSError) as error:
-        return {"errors": [f"collect_running: {error}"]}
-    await deps.runs.update_run(
-        _need(state.get("run_id"), "run_id"),
-        RunUpdate(
-            state=RunState.COLLECTING,
-            running_snapshot_id=collected.running_snapshot_id,
-            intended_snapshot_id=collected.intended_snapshot_id,
-        ),
-        deps.actor,
-    )
+        collected = await _collect(run_id, deps)
+    except RunStartedError as started:
+        return {"run_state": started.state.value}
+    except Exception as error:  # ruff: ignore[blind-except]
+        return {"errors": {"collect_running": f"collect_running: {error}"}}
+    view = collected.view
     return {
+        "device_id": view.device_id,
+        "sot_device_id": view.sot_device_id,
         "device": collected.device.model_dump(mode="json"),
-        "platform_name": collected.device.platform_name,
+        "platform_name": view.platform_name,
         "running_dump": collected.running_dump,
         "intended_dump": collected.intended_dump,
-        "run_state": RunState.COLLECTING,
+        "run_state": RunState.COLLECTING.value,
+        "errors": {"collect_running": ""},
     }
 
 
-async def _collect(state: ReviewState, deps: ReviewDeps) -> _Collected:
-    device = await deps.sot.get_device(
-        DeviceID(_need(state.get("sot_device_id"), "sot_device_id"))
-    )
-    device_id = _need(state.get("device_id"), "device_id")
+async def _collect(run_id: str, deps: ReviewDeps) -> _Collected:
+    view = await deps.runs.get_run(run_id)
+    if view.state not in {RunState.DRAFT, RunState.COLLECTING}:
+        raise RunStartedError(view.state)
+    device = await deps.sot.get_device(DeviceID(view.sot_device_id))
+    if (device.id, device.platform_name) != (view.sot_device_id, view.platform_name):
+        message = (
+            f"the source of truth returned {device.id!r} on {device.platform_name} "
+            f"for {view.sot_device_id!r} on {view.platform_name}"
+        )
+        raise CollectionError(message)
     intended = await deps.sot.intended_config(device.id)
     if intended is None:
         message = f"no intended config for device {device.id!r}"
-        raise IntendedConfigMissingError(message)
+        raise CollectionError(message)
     ref = await deps.sot.secret_ref(device.id, SecretPurpose.DEVICE_LOGIN)
     credentials = await deps.secrets.resolve(ref)
     async with deps.connection.session(device, credentials) as session:
         running = await session.fetch_running()
-    running_dump = parse(device.platform_name, running.body)
-    intended_dump = parse(device.platform_name, intended.body)
-    running_id = await deps.runs.add_snapshot(
+    for name, body in (("running", running.body), ("intended", intended.body)):
+        if "\x00" in body:
+            message = f"the {name} config holds a NUL character"
+            raise CollectionError(message)
+    platform_name = view.platform_name
+    running_dump = await asyncio.to_thread(parse, platform_name, running.body)
+    intended_dump = await asyncio.to_thread(parse, platform_name, intended.body)
+    running_dump, intended_dump = await deps.runs.record_collection(
+        run_id,
         Snapshot(
-            device_id=device_id,
+            device_id=view.device_id,
             kind="running",
             body=running.body,
             dump=running_dump,
             format=running.format,
             source=running.source,
             device_fingerprint=running.fingerprint,
-        )
-    )
-    intended_id = await deps.runs.add_snapshot(
+        ),
         Snapshot(
-            device_id=device_id,
+            device_id=view.device_id,
             kind="intended",
             body=intended.body,
             dump=intended_dump,
             format=intended.format,
             source="sot",
-        )
-    )
-    return _Collected(device, running_dump, intended_dump, running_id, intended_id)
-
-
-def route_on_errors(state: ReviewState) -> Literal["blocked", "pass"]:
-    """Send a run with an error to `blocked`."""
-    return "blocked" if state.get("errors") else "pass"
-
-
-async def build_remediation(state: ReviewState, deps: ReviewDeps) -> ReviewState:
-    """Build the remediation, the rollback, the future, and the config facts."""
-    running_dump = _need(state.get("running_dump"), "running_dump")
-    intended_dump = _need(state.get("intended_dump"), "intended_dump")
-    platform_name = _need(state.get("platform_name"), "platform_name")
-    device = _device(state)
-    try:
-        bundle = build_bundle(
-            platform_name,
-            running_dump,
-            intended_dump,
-            plugins=tuple(deps.plugins(device)),
-            tag_rules=deps.tag_rules,
-        )
-        future_text = "".join(
-            f"{line}\n" for line in render_lines(platform_name, bundle.future_dump)
-        )
-        derived = config_derived(bundle, running_dump, device)
-        fingerprint = change_fingerprint(bundle.remediation_dump)
-    except EngineError as error:
-        return {"errors": [f"build_remediation: {error}"]}
-    future_report = bundle.future_report.model_dump(mode="json")
-    future_id = await deps.runs.add_snapshot(
-        Snapshot(
-            device_id=_need(state.get("device_id"), "device_id"),
-            kind="future",
-            body=future_text,
-            dump=bundle.future_dump,
-            source="sot",
-        )
-    )
-    await deps.runs.update_run(
-        _need(state.get("run_id"), "run_id"),
-        RunUpdate(
-            state=RunState.REMEDIATING,
-            future_snapshot_id=future_id,
-            remediation_dump=bundle.remediation_dump,
-            rollback_dump=bundle.rollback_dump,
-            future_report=future_report,
-            change_fingerprint=fingerprint,
         ),
         deps.actor,
     )
+    return _Collected(view, device, running_dump, intended_dump)
+
+
+def route_after_collection(state: ReviewState) -> Literal["blocked", "pass", "end"]:
+    """Send an error to `blocked`, and end a run that started before."""
+    if _errors(state):
+        return "blocked"
+    return "pass" if state.get("run_state") == RunState.COLLECTING else "end"
+
+
+@dataclass(frozen=True, slots=True)
+class _Remediated:
+    bundle: RemediationBundle
+    derived: ConfigDerived
+    fingerprint: str
+    future_text: str
+
+
+def _remediate(
+    platform_name: str,
+    running_dump: DumpJson,
+    intended_dump: DumpJson,
+    device: DeviceRecord,
+    deps: ReviewDeps,
+) -> _Remediated:
+    bundle = build_bundle(
+        platform_name,
+        running_dump,
+        intended_dump,
+        plugins=tuple(deps.plugins(device)),
+        tag_rules=deps.tag_rules,
+    )
+    future_text = "".join(
+        f"{line}\n" for line in render_lines(platform_name, bundle.future_dump)
+    )
+    return _Remediated(
+        bundle,
+        config_derived(bundle, running_dump, device),
+        change_fingerprint(bundle.remediation_dump),
+        future_text,
+    )
+
+
+async def build_remediation(state: ReviewState, deps: ReviewDeps) -> ReviewState:
+    """Build the remediation, the rollback, the future, and the config facts.
+
+    The engine runs in a worker thread. Any error, from the engine or from a
+    plugin, ends the run in `BLOCKED`.
+    """
+    run_id = _need(state.get("run_id"), "run_id")
+    device_id = _need(state.get("device_id"), "device_id")
+    running_dump = _need(state.get("running_dump"), "running_dump")
+    intended_dump = _need(state.get("intended_dump"), "intended_dump")
+    platform_name = _need(state.get("platform_name"), "platform_name")
+    device = DeviceRecord.model_validate(_need(state.get("device"), "device"))
+    try:
+        result = await asyncio.to_thread(
+            _remediate, platform_name, running_dump, intended_dump, device, deps
+        )
+        bundle = result.bundle
+        future_report = bundle.future_report.model_dump(mode="json")
+        await deps.runs.record_remediation(
+            run_id,
+            Snapshot(
+                device_id=device_id,
+                kind="future",
+                body=result.future_text,
+                dump=bundle.future_dump,
+                source="sot",
+            ),
+            RunUpdate(
+                remediation_dump=bundle.remediation_dump,
+                rollback_dump=bundle.rollback_dump,
+                future_report=future_report,
+                change_fingerprint=result.fingerprint,
+            ),
+            deps.actor,
+        )
+    except Exception as error:  # ruff: ignore[blind-except]
+        return {"errors": {"build_remediation": f"build_remediation: {error}"}}
     return {
         "remediation_dump": bundle.remediation_dump,
         "rollback_dump": bundle.rollback_dump,
         "future_dump": bundle.future_dump,
         "future_report": future_report,
-        "change_fingerprint": fingerprint,
+        "change_fingerprint": result.fingerprint,
         "plan_source": "deterministic",
-        "evidence": {"config_derived": derived.model_dump(mode="json")},
-        "run_state": RunState.REMEDIATING,
+        "evidence": {"config_derived": result.derived.model_dump(mode="json")},
+        "run_state": RunState.REMEDIATING.value,
+        "errors": {"build_remediation": ""},
     }
 
 
@@ -284,50 +343,80 @@ def route_after_convergence(state: ReviewState) -> Literal["blocked", "pass"]:
     No model is consulted. No later node can undo this gate.
     """
     report = state.get("future_report", {})
-    if state.get("errors") or report.get("unresolved_negations"):
+    if _errors(state) or report.get("unresolved_negations"):
         return "blocked"
     return "pass"
 
 
 async def blocked(state: ReviewState, deps: ReviewDeps) -> ReviewState:
-    """End the run in `BLOCKED`, with each error recorded."""
-    errors = list(state.get("errors", []))
+    """End the run in `BLOCKED`, with each error recorded.
+
+    A run outside `BLOCKABLE_STATES` keeps its state and its error.
+    """
+    run_id = _need(state.get("run_id"), "run_id")
+    errors: list[JsonValue] = list(_errors(state))
     unresolved = state.get("future_report", {}).get("unresolved_negations")
     if isinstance(unresolved, list) and unresolved:
         errors.append(f"convergence gate: {len(unresolved)} unresolved negation(s)")
-    await deps.runs.update_run(
-        _need(state.get("run_id"), "run_id"),
-        RunUpdate(state=RunState.BLOCKED, error={"errors": list[JsonValue](errors)}),
+    written = await deps.runs.update_run(
+        run_id,
+        RunUpdate(state=RunState.BLOCKED, error={"errors": errors}),
         deps.actor,
+        only_from=BLOCKABLE_STATES,
     )
-    return {"run_state": RunState.BLOCKED}
+    return {"run_state": RunState.BLOCKED.value} if written else {}
 
 
-async def evaluate_policy(state: ReviewState, deps: ReviewDeps) -> ReviewState:
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ApprovalDeps(ReviewDeps):
+    """The dependencies of the full review graph: the collect ones and the approval ones."""
+
+    approvals: ApprovalService
+    ledger: NotificationLedger
+    channels: tuple[str, ...] = ("log",)
+    approval_ttl: timedelta = timedelta(hours=72)
+
+
+class _Resume(BaseModel):
+    decision: Decision
+    actor: str
+    comment: str = ""
+
+
+def route_on_errors(state: ReviewState) -> Literal["blocked", "pass"]:
+    """Send a run with an error to `blocked`."""
+    return "blocked" if _errors(state) else "pass"
+
+
+async def evaluate_policy(state: ReviewState, deps: ApprovalDeps) -> ReviewState:
     """Set the final tier and the approvals that it needs.
 
     With no assessment tier, the tier is `HIGH` and `unknowns` names it. The
     final tier is never below the floor.
     """
+    run_id = _need(state.get("run_id"), "run_id")
     unknowns: list[str] = []
     try:
         floor = _tier(state.get("risk_tier_floor"))
         assessed = _tier(state.get("risk_tier_final"))
     except KeyError as error:
-        return {"errors": [f"evaluate_policy: unknown risk tier {error}"]}
+        return {
+            "errors": {"evaluate_policy": f"evaluate_policy: unknown risk tier {error}"}
+        }
     if assessed is None:
         assessed = RiskTier.HIGH
         unknowns.append(NO_ASSESSMENT)
     final = max(assessed, floor or RiskTier.LOW)
     expires_at = datetime.now(UTC) + deps.approval_ttl
     await deps.runs.update_run(
-        _need(state.get("run_id"), "run_id"),
+        run_id,
         RunUpdate(
             state=RunState.EVALUATING_POLICY,
             risk_tier_floor=floor,
             risk_tier_final=final,
         ),
         deps.actor,
+        only_from=_POLICY_FROM,
     )
     return {
         "risk_tier_final": final.name,
@@ -336,7 +425,8 @@ async def evaluate_policy(state: ReviewState, deps: ReviewDeps) -> ReviewState:
             "approval_expires_at": expires_at.isoformat(),
         },
         "unknowns": unknowns,
-        "run_state": RunState.EVALUATING_POLICY,
+        "run_state": RunState.EVALUATING_POLICY.value,
+        "errors": {"evaluate_policy": ""},
     }
 
 
@@ -344,7 +434,7 @@ def _tier(name: str | None) -> RiskTier | None:
     return None if name is None else RiskTier[name]
 
 
-async def notify_pending(state: ReviewState, deps: ReviewDeps) -> ReviewState:
+async def notify_pending(state: ReviewState, deps: ApprovalDeps) -> ReviewState:
     """Tell each channel that the run waits for approval, one time."""
     run_id = _need(state.get("run_id"), "run_id")
     tier = _need(state.get("risk_tier_final"), "risk_tier_final")
@@ -352,7 +442,7 @@ async def notify_pending(state: ReviewState, deps: ReviewDeps) -> ReviewState:
     message = Notification(
         title=f"Approval needed for run {run_id}",
         body=(
-            f"Run {run_id} on device {_device(state).name} waits for approval. "
+            f"Run {run_id} on device {_device_name(state)} waits for approval. "
             f"Risk tier: {tier}. "
             f"Approvals needed: {policy['approvals_required']}."
         ),
@@ -364,7 +454,7 @@ async def notify_pending(state: ReviewState, deps: ReviewDeps) -> ReviewState:
     return {}
 
 
-async def request_approval(state: ReviewState, deps: ReviewDeps) -> ReviewState:
+async def request_approval(state: ReviewState, deps: ApprovalDeps) -> ReviewState:
     """Open the approval request, then park until a human decides.
 
     The node runs again from the top on resume. The calls above `interrupt()`
@@ -383,6 +473,7 @@ async def request_approval(state: ReviewState, deps: ReviewDeps) -> ReviewState:
         _need(state.get("run_id"), "run_id"),
         RunUpdate(state=RunState.AWAITING_APPROVAL),
         deps.actor,
+        only_from=_AWAIT_FROM,
     )
     decision = interrupt(
         {
@@ -392,7 +483,7 @@ async def request_approval(state: ReviewState, deps: ReviewDeps) -> ReviewState:
             "summary": _summary(state, tier),
         }
     )
-    return {"approval": decision, "run_state": RunState.AWAITING_APPROVAL}
+    return {"approval": decision, "run_state": RunState.AWAITING_APPROVAL.value}
 
 
 def _summary(state: ReviewState, tier: str) -> str:
@@ -402,11 +493,12 @@ def _summary(state: ReviewState, tier: str) -> str:
     return f"No risk assessment ran. The tier is {tier} by default."
 
 
-async def record_decision(state: ReviewState, deps: ReviewDeps) -> ReviewState:
+async def record_decision(state: ReviewState, deps: ApprovalDeps) -> ReviewState:
     """Set `APPROVED` or `REJECTED` from the resume payload.
 
     A payload that is not a valid decision never approves. The run ends in
-    `BLOCKED` with the error recorded.
+    `BLOCKED` with the error recorded. A run that left `AWAITING_APPROVAL`
+    stays unchanged.
     """
     run_id = _need(state.get("run_id"), "run_id")
     try:
@@ -417,16 +509,25 @@ async def record_decision(state: ReviewState, deps: ReviewDeps) -> ReviewState:
             run_id,
             RunUpdate(state=RunState.BLOCKED, error={"errors": [reason]}),
             deps.actor,
+            only_from={RunState.AWAITING_APPROVAL},
         )
-        return {"errors": [reason], "run_state": RunState.BLOCKED}
+        return {
+            "errors": {"record_decision": reason},
+            "run_state": RunState.BLOCKED.value,
+        }
     final = (
         RunState.APPROVED if resume.decision is Decision.APPROVE else RunState.REJECTED
     )
-    await deps.runs.update_run(run_id, RunUpdate(state=final), deps.actor)
-    return {"approval": resume.model_dump(mode="json"), "run_state": final}
+    await deps.runs.update_run(
+        run_id,
+        RunUpdate(state=final),
+        deps.actor,
+        only_from={RunState.AWAITING_APPROVAL},
+    )
+    return {"approval": resume.model_dump(mode="json"), "run_state": final.value}
 
 
-async def notify_decided(state: ReviewState, deps: ReviewDeps) -> ReviewState:
+async def notify_decided(state: ReviewState, deps: ApprovalDeps) -> ReviewState:
     """Tell each channel how the run ended, one time."""
     run_id = _need(state.get("run_id"), "run_id")
     outcome = _need(state.get("run_state"), "run_state")
@@ -436,7 +537,7 @@ async def notify_decided(state: ReviewState, deps: ReviewDeps) -> ReviewState:
     message = Notification(
         title=f"Run {run_id} is {outcome}",
         body=(
-            f"Run {run_id} on device {_device(state).name} is {outcome}. "
+            f"Run {run_id} on device {_device_name(state)} is {outcome}. "
             f"Risk tier: {tier}.{by}"
         ),
         run_id=run_id,
@@ -446,8 +547,12 @@ async def notify_decided(state: ReviewState, deps: ReviewDeps) -> ReviewState:
     return {}
 
 
-def _device(state: ReviewState) -> DeviceRecord:
-    return DeviceRecord.model_validate(_need(state.get("device"), "device"))
+def _device_name(state: ReviewState) -> str:
+    return DeviceRecord.model_validate(_need(state.get("device"), "device")).name
+
+
+def _errors(state: ReviewState) -> list[str]:
+    return [error for error in state.get("errors", {}).values() if error]
 
 
 def _need[T](value: T | None, key: str) -> T:
@@ -475,8 +580,8 @@ def add_collect_nodes(
     graph.add_edge(START, "collect_running")
     graph.add_conditional_edges(
         "collect_running",
-        route_on_errors,
-        {"blocked": "blocked", "pass": "build_remediation"},
+        route_after_collection,
+        {"blocked": "blocked", "pass": "build_remediation", "end": END},
     )
     graph.add_conditional_edges(
         "build_remediation",
@@ -494,7 +599,7 @@ def build_collect_graph(deps: ReviewDeps) -> StateGraph[ReviewState]:
 
 
 def build_review_graph(
-    deps: ReviewDeps, *, assessment: AssessmentHook | None = None
+    deps: ApprovalDeps, *, assessment: AssessmentHook | None = None
 ) -> StateGraph[ReviewState]:
     """Return the uncompiled review graph.
 

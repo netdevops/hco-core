@@ -444,8 +444,9 @@ rows itself.
 `hco_core.graphs.review` holds the LangGraph graph of one run. No node calls a
 model. Compile a graph with a checkpointer, and start it with `start_run()`.
 
-1. `collect_running` reads the device and its intended config from the source
-   of truth, and the running config from the device. It stores both snapshots.
+1. `collect_running` reads the device of the run from the source of truth, with
+   the id and the platform of the `device` row. It reads the intended config
+   and the running config, and stores both snapshots.
 2. `build_remediation` builds the remediation, the rollback, and the future
    config, with the plugins and the tag rules of `ReviewDeps`. It stores the
    future snapshot, and puts the config-derived facts in
@@ -453,13 +454,16 @@ model. Compile a graph with a checkpointer, and start it with `start_run()`.
 3. The convergence gate sends a remediation with an unresolved negation to
    `blocked`. Nothing after the gate runs then.
 
-An error from the source of truth, an unreachable device, and two different
-drivers also end the run in `BLOCKED`, with the error in
-`remediation_run.error`. `build_collect_graph()` ends a run that passes the
+Any error from the source of truth, the device, the engine, or a plugin also
+ends the run in `BLOCKED`, with the error in `remediation_run.error`. A device
+that is not the device of the run, and a config with a NUL character, do the
+same. The graph input is `run_id`. A run that left `DRAFT` does not start
+again, and a node that runs again writes no second row. `build_collect_graph()` ends a run that passes the
 gate. `add_collect_nodes()` sends it to a node that you name.
 
 `build_review_graph(deps, *, assessment=None)` adds the approval step after
-the gate:
+the gate. Its `deps` is an `ApprovalDeps`, which also holds the approval
+service, the notification ledger, and the channel names:
 
 4. `evaluate_policy` sets the final risk tier. The tier is never below the
    floor. With no assessment, the tier is `HIGH` and `unknowns` holds
