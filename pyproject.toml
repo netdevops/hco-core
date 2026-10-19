@@ -30,6 +30,7 @@ psycopg = {version = "^3.2", extras = ["binary", "pool"]}
 pydantic-settings = "^2.5"
 structlog = ">=24.4"
 python-ulid = ">=3.0"
+langgraph = "^1.2"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "*"

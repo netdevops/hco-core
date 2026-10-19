@@ -12,7 +12,7 @@ from hco_core.domain.remediation import DumpJson
 from hco_core.domain.risk import RiskTier
 from hco_core.services.audit import Actor
 from hco_core.services.runs import RunNotFoundError, RunRepository, RunUpdate, Snapshot
-from tests.services.conftest import REQUESTER
+from tests.conftest import REQUESTER
 
 GRAPH = Actor("hco-core", "system", "api")
 REQUESTER_ACTOR = Actor(REQUESTER, "user", "cli", request_id="req-1")

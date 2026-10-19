@@ -31,7 +31,7 @@ from hco_core.services.approval import (
     RequesterMayNotApproveError,
     RequesterMismatchError,
 )
-from tests.services.conftest import REQUESTER
+from tests.conftest import REQUESTER
 
 LATER = datetime.now(UTC) + timedelta(hours=72)
 
