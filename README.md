@@ -368,6 +368,11 @@ schema `hco`: `device`, `config_snapshot`, `change_set`, `remediation_run`,
   stores the positional `Platform` value.
 - A trigger refuses a decision by the person who requested the change, also on
   a direct `INSERT` or `UPDATE`.
+- A second trigger refuses a change of the requester of an approval request,
+  also through `INSERT ... ON CONFLICT DO UPDATE`.
+- The requester and the actor must have no leading or trailing spaces and must
+  not be empty. The comparison is case-sensitive.
+- `device.platform_name` must be upper case and must not be a number.
 - `UNIQUE (request_id, actor)` permits one decision for each person.
   `UNIQUE (run_id, channel, purpose)` permits one notification for each
   purpose.

@@ -10,6 +10,23 @@ from sqlalchemy import Connection, text
 from hco_core.db.models import SCHEMA, Base
 
 
+def given_connection() -> Connection:
+    """Return the connection that `hco_core.db.migrate` puts in the config.
+
+    Raises:
+        RuntimeError: If the `alembic` command runs this file without it.
+
+    """
+    connection = context.config.attributes.get("connection")
+    if not isinstance(connection, Connection):
+        message = (
+            "run the migrations with hco_core.db.migrate.upgrade() or "
+            "downgrade(), not with the alembic command"
+        )
+        raise RuntimeError(message)  # ruff: ignore[type-check-without-type-error]
+    return connection
+
+
 def run_migrations(connection: Connection) -> None:
     """Make schema `hco`, then run the migrations in it."""
     connection.execute(text(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}"))
@@ -23,4 +40,4 @@ def run_migrations(connection: Connection) -> None:
         context.run_migrations()
 
 
-run_migrations(context.config.attributes["connection"])
+run_migrations(given_connection())

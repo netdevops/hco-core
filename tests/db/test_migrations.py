@@ -1,13 +1,15 @@
 """The initial migration makes the schema of docs/spec/03 (AC-12)."""
 
 import pytest
+from alembic import command
 from alembic.autogenerate import compare_metadata
+from alembic.config import Config
 from alembic.migration import MigrationContext
 from pydantic import SecretStr
 from sqlalchemy import Engine, create_engine, inspect, text
 from sqlalchemy.dialects.postgresql import TIMESTAMP
 
-from hco_core.db.migrate import downgrade, upgrade
+from hco_core.db.migrate import ALEMBIC_INI, downgrade, upgrade
 from hco_core.db.models import Base
 from hco_core.settings import CoreSettings
 from tests.db.conftest import TABLES
@@ -112,3 +114,9 @@ def test_the_models_match_the_migration(database_url: str) -> None:
         public_engine.dispose()
 
     assert differences == []
+
+
+def test_alembic_without_a_connection_names_the_migrate_functions() -> None:
+    """The `alembic` command alone gets a clear error, not a `KeyError`."""
+    with pytest.raises(RuntimeError, match=r"hco_core\.db\.migrate\.upgrade\(\)"):
+        command.upgrade(Config(ALEMBIC_INI), "head")

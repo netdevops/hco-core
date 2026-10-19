@@ -1,12 +1,14 @@
 """`PlatformName` stores a platform by name, never by value (hard rule 5)."""
 
 import asyncio
+from collections.abc import Sequence
 
 import pytest
 from hier_config.models import Platform
 from pydantic import SecretStr
-from sqlalchemy import select
+from sqlalchemy import Engine, select, text
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.exc import IntegrityError
 
 from hco_core.db.models import Device
 from hco_core.db.session import create_database_engine, create_sessionmaker
@@ -51,7 +53,7 @@ def test_new_id_is_a_sortable_ulid() -> None:
     assert first[:10] <= second[:10]
 
 
-async def store_and_load(database_url: str, spellings: list[str]) -> list[str]:
+async def store_and_load(database_url: str, spellings: Sequence[str]) -> list[str]:
     """Store one device for each spelling, and return the stored names in order."""
     engine = create_database_engine(CoreSettings(database_url=SecretStr(database_url)))
     sessions = create_sessionmaker(engine)
@@ -61,8 +63,8 @@ async def store_and_load(database_url: str, spellings: list[str]) -> list[str]:
                 session.add(
                     Device(
                         sot_name="yaml",
-                        sot_device_id=f"r{index}",
-                        name=f"r{index}",
+                        sot_device_id=f"r{index:02d}",
+                        name=f"r{index:02d}",
                         platform_name=spelling,
                         mgmt_address="192.0.2.1",
                     )
@@ -81,3 +83,32 @@ def test_three_spellings_of_one_platform_store_one_name(database_url: str) -> No
     )
 
     assert stored == ["CISCO_IOS", "CISCO_IOS", "CISCO_IOS"]
+
+
+def test_every_platform_member_is_stored_as_its_name(database_url: str) -> None:
+    """Each member reaches the row as `.name`, in the order it was stored."""
+    platforms = list(Platform)
+
+    stored = asyncio.run(store_and_load(database_url, platforms))
+
+    assert stored == [platform.name for platform in platforms]
+
+
+@pytest.mark.parametrize("value", ["3", "cisco_ios"])
+def test_the_column_refuses_a_value_or_a_lower_case_name(
+    engine: Engine, value: str
+) -> None:
+    """A direct INSERT past `PlatformName` cannot store a value or a lower-case name."""
+    with (
+        pytest.raises(IntegrityError, match="ck_device_platform_name"),
+        engine.begin() as connection,
+    ):
+        connection.execute(
+            text(
+                "INSERT INTO hco.device (id, sot_name, sot_device_id, name, "
+                "platform_name, mgmt_address) VALUES "
+                "('01JDEVICE0000000000000000A', 'yaml', 'r1', 'r1', :value, "
+                "'192.0.2.1')"
+            ),
+            {"value": value},
+        )
