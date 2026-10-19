@@ -2,17 +2,21 @@
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from typing import get_args
 
 import pytest
 from sqlalchemy import Engine, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from hco_core.db.models import ACTOR_KINDS, RUN_STATES, SURFACES
 from hco_core.domain.approval import (
+    ActorKind,
     ApprovalDecision,
     ApprovalRequest,
     ApprovalState,
     Decision,
     RunState,
+    Surface,
 )
 from hco_core.domain.risk import RiskTier
 from hco_core.policy.tiers import APPROVALS_BY_TIER, REQUESTER_MAY_APPROVE
@@ -74,9 +78,13 @@ def test_the_tier_table_is_the_phase_1_stand_in() -> None:
 
 def test_the_run_states_match_the_database() -> None:
     """The enum holds the same values as the CHECK on remediation_run.state."""
-    from hco_core.db.models import RUN_STATES  # ruff: ignore[import-outside-top-level]
-
     assert tuple(RunState) == RUN_STATES
+
+
+def test_the_actor_kinds_and_surfaces_match_the_database() -> None:
+    """The domain types hold the same values as the CHECKs on the decision."""
+    assert get_args(ActorKind.__value__) == ACTOR_KINDS
+    assert get_args(Surface.__value__) == SURFACES
 
 
 def test_upsert_is_idempotent_on_the_change_set(
@@ -129,6 +137,18 @@ def test_upsert_never_changes_the_requester_of_a_request(
     with pytest.raises(RequesterMismatchError, match="carol"):
         runner.run(
             service.upsert_request(change_set_id, RiskTier.LOW, 1, "carol", LATER)
+        )
+
+
+def test_upsert_refuses_a_padded_requester(
+    runner: asyncio.Runner, service: ApprovalService, change_set_id: str
+) -> None:
+    """A requester name with white space at an end is refused before the database."""
+    with pytest.raises(InvalidActorError, match="white space"):
+        runner.run(
+            service.upsert_request(
+                change_set_id, RiskTier.LOW, 1, f"{REQUESTER} ", LATER
+            )
         )
 
 

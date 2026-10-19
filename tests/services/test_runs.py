@@ -102,10 +102,17 @@ def test_a_run_starts_in_draft_and_records_each_transition(
         event for event in audit_rows(engine) if event[2] == "remediation_run"
     ]
     assert run_events == [
-        ("hco-core", "run.create", "remediation_run", run_id, None, {"state": "DRAFT"}),
         (
             "hco-core",
-            "run.transition",
+            "remediation_run.create",
+            "remediation_run",
+            run_id,
+            None,
+            {"state": "DRAFT"},
+        ),
+        (
+            "hco-core",
+            "remediation_run.transition",
             "remediation_run",
             run_id,
             {"state": "DRAFT"},
@@ -113,7 +120,7 @@ def test_a_run_starts_in_draft_and_records_each_transition(
         ),
         (
             "hco-core",
-            "run.transition",
+            "remediation_run.transition",
             "remediation_run",
             run_id,
             {"state": "COLLECTING"},
@@ -133,7 +140,7 @@ def test_an_update_without_a_state_change_writes_no_audit_event(
 
     assert [event[1] for event in audit_rows(engine)] == [
         "change_set.create",
-        "run.create",
+        "remediation_run.create",
     ]
 
 

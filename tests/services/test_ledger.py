@@ -131,7 +131,7 @@ def test_another_purpose_is_another_delivery(
     runner.run(ledger.deliver(run_id, "recording", "pending", MESSAGE))
     runner.run(ledger.deliver(run_id, "recording", "decided", MESSAGE))
 
-    assert len(channel.sent) == 2  # ruff: ignore[magic-value-comparison]
+    assert channel.sent == [MESSAGE, MESSAGE]
     assert [row[0] for row in ledger_rows(engine)] == ["pending", "decided"]
 
 

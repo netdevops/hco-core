@@ -1,4 +1,4 @@
-"""Fixtures for the tests that need Postgres.
+"""Fixtures for the Postgres tests of every test package.
 
 The tests read `HCO_DATABASE_URL`. An unreachable database fails the test and
 never skips it.

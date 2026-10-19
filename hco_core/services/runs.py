@@ -12,12 +12,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from hco_core.db import models
 from hco_core.db.types import new_id
 from hco_core.domain.approval import RunState
+from hco_core.domain.config import ConfigFormat
 from hco_core.domain.remediation import DumpJson
 from hco_core.domain.risk import RiskTier
 from hco_core.services.audit import Actor, AuditEntry, add_audit_event
 
 type SnapshotKind = Literal["running", "intended", "future", "post_change"]
-type ConfigFormat = Literal["cli", "xml", "json"]
 type SnapshotSource = Literal["device", "git", "sot", "upload"]
 
 
@@ -50,7 +50,7 @@ class Snapshot:
     kind: SnapshotKind
     body: str
     dump: DumpJson
-    format: ConfigFormat = "cli"
+    format: ConfigFormat = ConfigFormat.CLI
     source: SnapshotSource = "device"
     device_fingerprint: str | None = None
 
@@ -191,12 +191,12 @@ def _audit_transition(
 ) -> None:
     if before == row.state:
         return
-    kind = "change_set" if isinstance(row, models.ChangeSet) else "run"
+    verb = "create" if before is None else "transition"
     add_audit_event(
         session,
         AuditEntry(
             actor=actor,
-            action=f"{kind}.create" if before is None else f"{kind}.transition",
+            action=f"{row.__tablename__}.{verb}",
             object_type=row.__tablename__,
             object_id=row.id,
             before=None if before is None else {"state": before},

@@ -62,18 +62,22 @@ class NotificationLedger:
                 .on_conflict_do_nothing(index_elements=["run_id", "channel", "purpose"])
                 .returning(NotificationDelivery.id)
             )
-            existing = (
-                await session.execute(
-                    select(NotificationDelivery.id, NotificationDelivery.handle).where(
-                        NotificationDelivery.run_id == run_id,
-                        NotificationDelivery.channel == channel,
-                        NotificationDelivery.purpose == purpose,
+            existing = None
+            if claimed is None:
+                existing = (
+                    await session.execute(
+                        select(
+                            NotificationDelivery.id, NotificationDelivery.handle
+                        ).where(
+                            NotificationDelivery.run_id == run_id,
+                            NotificationDelivery.channel == channel,
+                            NotificationDelivery.purpose == purpose,
+                        )
                     )
-                )
-            ).one()
+                ).one()
         if claimed is not None:
             return await self._send(target, claimed, message)
-        if existing.handle is None:
+        if existing is None or existing.handle is None:
             return None
         handle = DeliveryHandle.model_validate(existing.handle)
         await target.update(handle, message)
