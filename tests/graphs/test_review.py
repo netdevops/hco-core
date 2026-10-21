@@ -954,3 +954,5 @@ def test_higher_tier_keeps_the_higher_name_and_any_unknown_name() -> None:
     assert review.higher_tier("LOW", "HIGH") == "HIGH"
     assert review.higher_tier("LOW", "SEVERE") == "SEVERE"
     assert review.higher_tier("SEVERE", "LOW") == "SEVERE"
+    assert review.higher_tier("CRITICAL", "") == "CRITICAL"
+    assert review.higher_tier("CRITICAL", None) == "CRITICAL"

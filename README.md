@@ -561,7 +561,8 @@ keeps its state, and no message goes out for it.
 An assessment layer adds its nodes with the `assessment` hook. The hook returns
 the names of its first and last node. A hook node must catch its own errors
 and write each one into `errors` under its own node name. A later node cannot
-lower `risk_tier_floor` or `risk_tier_final`.
+lower `risk_tier_floor` or `risk_tier_final`. An empty value or `None` keeps
+the tier, and a name that is not a tier ends the run in `BLOCKED`.
 
 ## Requirements
 

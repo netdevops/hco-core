@@ -82,12 +82,14 @@ def merge_dicts(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
     return {**left, **right}
 
 
-def higher_tier(left: str, right: str) -> str:
+def higher_tier(left: str | None, right: str | None) -> str | None:
     """Return the higher of two risk tier names, so that no node lowers a tier.
 
-    An empty text counts as no tier. A name that is not a tier wins, so that
-    `evaluate_policy` blocks on it.
+    An empty text or None counts as no tier, and the other side stays. Any
+    other name that is not a tier wins, so that `evaluate_policy` blocks on it.
     """
+    if not right:
+        return left
     if not left or right not in RiskTier.__members__:
         return right
     if left not in RiskTier.__members__:
