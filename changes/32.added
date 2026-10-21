@@ -1,0 +1,3 @@
+Added `POST /api/v1/runs`. It starts a review of one device that stops at `AWAITING_APPROVAL`, and it needs the `X-HCO-Actor` header.
+Added `GET /api/v1/runs` and `GET /api/v1/runs/{id}` with the state, the risk tiers, and the errors of each run.
+Added `GET /api/v1/runs/{id}/diff`, which shows the remediation, the rollback, and the future config as lines.

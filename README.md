@@ -771,10 +771,17 @@ export HCO_VALIDATION_KEY=$(python -c "import secrets; print(secrets.token_hex(3
 poetry run uvicorn --factory hco_core.api.app:app_from_env --port 8080
 ```
 
-Read the inventory, start a run, and read the diff:
+Read the inventory, and show a device:
 
 ```bash
 curl -s -X POST -H 'X-HCO-Actor: alice' localhost:8080/api/v1/devices/sync
+curl -s 'localhost:8080/api/v1/devices?limit=10'
+curl -s localhost:8080/api/v1/devices/r1
+```
+
+Start a run, and read its state and its diff:
+
+```bash
 curl -s -X POST -H 'X-HCO-Actor: alice' -H 'Content-Type: application/json' \
   -d '{"device_id": "r1"}' localhost:8080/api/v1/runs
 curl -s localhost:8080/api/v1/runs/<run_id>
