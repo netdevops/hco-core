@@ -148,5 +148,5 @@ def main(arguments: Sequence[str] | None = None) -> int:
     return EXIT_VIOLATION if violations else 0
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     sys.exit(main())
