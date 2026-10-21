@@ -663,6 +663,62 @@ async def review_to_approval() -> str:
 assert asyncio.run(review_to_approval()) == "APPROVED"
 ```
 
+### Durable checkpoints and resume
+
+A run can wait days for a person. `open_checkpointer(settings)` gives an
+`AsyncPostgresSaver` on its own connection, so a parked run survives a restart.
+Compile the review graph with this saver in production. Use `InMemorySaver`
+only in tests.
+
+- The saver keeps its four tables (`CHECKPOINT_TABLES`) in schema `hco`. The
+  Alembic chain does not own them.
+- Run `upgrade(settings)` first, because it makes schema `hco`. Then run
+  `setup_checkpointer(settings)` one time. `open_checkpointer` also runs the
+  setup, and the setup is safe to run again.
+- `RunResumer(runs, graph, settings).resume(run_id, decision)` is the only way a
+  parked run continues. It reads the thread of the run, opens a new saver,
+  compiles a new graph, and resumes with `Command(resume=...)` and
+  `durability="sync"`.
+- Call `resume` only after `ApprovalService.decide()` closes the request, from
+  the `resume` callback of the service. The payload never approves:
+  `record_decision` reads the closed request from the database.
+
+```python
+import asyncio
+
+from hco_core.db.migrate import upgrade
+from hco_core.graphs.checkpointer import open_checkpointer, setup_checkpointer
+from hco_core.settings import CoreSettings
+
+settings = CoreSettings()
+upgrade(settings)
+asyncio.run(setup_checkpointer(settings))
+
+
+async def latest_checkpoint() -> object:
+    async with open_checkpointer(settings) as saver:
+        return await saver.aget_tuple({"configurable": {"thread_id": "no-run"}})
+
+
+assert asyncio.run(latest_checkpoint()) is None
+```
+
+### One interrupt in each node
+
+A resumed node runs again from the top. A node with a second `interrupt()`, or
+with an `interrupt()` that only some runs reach, asks the person a different
+question on each run. The `interrupts` lint rule stops this in CI:
+
+```bash
+poetry run python -m hco_core.lint.interrupts hco_core
+```
+
+The command prints each violation as `path:line: function: reason` and exits 1.
+It fails on a second `interrupt()` in one function, and on an `interrupt()`
+inside `if`, `for`, `while`, `try`, `with`, `match`, a conditional expression, a
+boolean operator, a comprehension, or a lambda. Calls above the `interrupt()`
+are permitted, so make each one idempotent.
+
 ## Requirements
 
 Python 3.12 to 3.14.
@@ -698,6 +754,7 @@ poetry run ruff format --check .
 poetry run ruff check .
 poetry run mypy hco_core
 poetry run pyright
+poetry run python -m hco_core.lint.interrupts hco_core
 poetry run pytest --cov=hco_core
 ```
 

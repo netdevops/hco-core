@@ -1,0 +1,2 @@
+Added durable checkpoints in Postgres. A run that waits for approval continues in a new process after a restart.
+Added the interrupts lint rule. Run `python -m hco_core.lint.interrupts hco_core` to find a graph node that can ask for approval more than one time.
