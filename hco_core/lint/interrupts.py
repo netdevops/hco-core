@@ -1,10 +1,20 @@
 """Fail on a graph node that can call `interrupt()` more than one time per run.
 
 A resumed node runs again from the top, so its one `interrupt()` must be
-unconditional, and each call above it must be idempotent. This rule finds a
-second `interrupt()` in one function, and an `interrupt()` inside a branch, a
-loop, a `try`, a `with`, a `match`, a boolean operator, a comprehension, or a
-lambda. Run it as `python -m hco_core.lint.interrupts <paths>`.
+unconditional, and each call above it must be idempotent. This rule finds:
+
+- A second `interrupt()` in one function.
+- An `interrupt()` inside a branch, a loop, a `try`, a `with`, a `match`, an
+  `assert`, a boolean operator, a comprehension, or a lambda.
+- An `interrupt()` outside a function body, for example in a decorator or a
+  default argument.
+- A `return`, `raise`, `break`, or `continue` inside one of these constructs
+  above the `interrupt()`.
+
+The rule finds `interrupt`, a name imported `as` another name, and any
+`.interrupt` attribute. It does not follow a local alias such as
+`ask = interrupt`, or `getattr`. Run it as
+`python -m hco_core.lint.interrupts <paths>`.
 """
 
 import ast
@@ -30,6 +40,7 @@ _CONDITIONAL: Final[dict[type[ast.AST], str]] = {
     ast.With: "with",
     ast.AsyncWith: "with",
     ast.Match: "match",
+    ast.Assert: "assert",
     ast.BoolOp: "a boolean operator",
     ast.ListComp: "a comprehension",
     ast.SetComp: "a comprehension",
@@ -39,6 +50,9 @@ _CONDITIONAL: Final[dict[type[ast.AST], str]] = {
 }
 _FUNCTIONS: Final = (ast.FunctionDef, ast.AsyncFunctionDef)
 _SCOPES: Final = (*_FUNCTIONS, ast.ClassDef)
+_EXITS: Final = (ast.Return, ast.Raise, ast.Break, ast.Continue)
+type _Scope = ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef
+type _Event = tuple[ast.Call | ast.stmt, tuple[str, ...]]
 _MODULE: Final = "<module>"
 
 
@@ -81,12 +95,28 @@ def _check_file(path: Path) -> list[Violation]:
     violations: list[Violation] = []
     for scope in [module, *_scopes(module)]:
         name = scope.name if isinstance(scope, _SCOPES) else _MODULE
-        in_function = isinstance(scope, _FUNCTIONS)
-        for index, (call, enclosing) in enumerate(_calls(scope, names, ())):
-            message = _message(index, enclosing, in_function=in_function)
-            if message:
-                violations.append(Violation(path, call.lineno, name, message))
+        violations.extend(
+            Violation(path, line, name, message)
+            for line, message in _scope_problems(scope, names)
+        )
     return sorted(violations, key=lambda violation: violation.line)
+
+
+def _scope_problems(scope: _Scope, names: frozenset[str]) -> Iterator[tuple[int, str]]:
+    in_function = isinstance(scope, _FUNCTIONS)
+    events = list(_events(scope.body, names, ()))
+    calls = [(node, where) for node, where in events if isinstance(node, ast.Call)]
+    for index, (call, enclosing) in enumerate(calls):
+        message = _message(index, enclosing, in_function=in_function)
+        if message:
+            yield call.lineno, message
+    if not (in_function and calls):
+        return
+    first = min(call.lineno for call, _ in calls)
+    for node, enclosing in events:
+        if isinstance(node, _EXITS) and enclosing and node.lineno < first:
+            keyword = type(node).__name__.lower()
+            yield node.lineno, f"{keyword} inside {enclosing[-1]} above {INTERRUPT}()"
 
 
 def _message(index: int, enclosing: tuple[str, ...], *, in_function: bool) -> str:
@@ -118,16 +148,38 @@ def _scopes(
             yield node
 
 
-def _calls(
-    node: ast.AST, names: frozenset[str], enclosing: tuple[str, ...]
-) -> Iterator[tuple[ast.Call, tuple[str, ...]]]:
-    for child in ast.iter_child_nodes(node):
+def _header(
+    scope: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
+) -> list[ast.AST]:
+    if isinstance(scope, ast.ClassDef):
+        return [*scope.decorator_list, *scope.bases, *scope.keywords]
+    returns = [scope.returns] if scope.returns else []
+    return [*scope.decorator_list, scope.args, *returns]
+
+
+def _events(
+    nodes: Iterable[ast.AST], names: frozenset[str], enclosing: tuple[str, ...]
+) -> Iterator[_Event]:
+    """Give each `interrupt()` call and each exit of the scope, with its constructs.
+
+    The header of a nested function or class belongs to this scope; its body
+    does not.
+
+    Yields:
+        The call or the exit statement, and the constructs around it.
+
+    """
+    for child in nodes:
         if isinstance(child, _SCOPES):
+            yield from _events(_header(child), names, enclosing)
             continue
-        if isinstance(child, ast.Call) and _is_interrupt(child, names):
+        if isinstance(child, _EXITS) or (
+            isinstance(child, ast.Call) and _is_interrupt(child, names)
+        ):
             yield child, enclosing
         kind = _CONDITIONAL.get(type(child))
-        yield from _calls(child, names, (*enclosing, kind) if kind else enclosing)
+        inner = (*enclosing, kind) if kind else enclosing
+        yield from _events(ast.iter_child_nodes(child), names, inner)
 
 
 def _is_interrupt(call: ast.Call, names: frozenset[str]) -> bool:

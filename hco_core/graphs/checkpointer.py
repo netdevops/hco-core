@@ -1,33 +1,60 @@
 """The Postgres checkpointer that keeps a parked run across processes.
 
 The saver keeps its four tables in schema `hco`, next to the hco-core tables.
-`hco_core.db.migrate.upgrade` makes the schema, so run it first.
+`setup_checkpointer` makes them, one time, as a deploy step after
+`hco_core.db.migrate.upgrade`. After that, the runtime role needs only `USAGE`
+on the schema and DML grants on the tables.
 """
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-from psycopg.conninfo import make_conninfo
+from psycopg import ProgrammingError
+from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
 from hco_core.db.models import SCHEMA
 from hco_core.settings import PSYCOPG_SCHEME, CoreSettings
 
 
+class InvalidDatabaseUrlError(ValueError):
+    """The database URL does not parse. The message never shows the URL."""
+
+    def __init__(self) -> None:
+        super().__init__("HCO_DATABASE_URL is not a valid Postgres URL")
+
+
 def checkpointer_conninfo(settings: CoreSettings) -> str:
     """Return the libpq connection text of the saver, with schema `hco` first.
 
-    The `options` parameter of the database URL is replaced.
+    The search path is added after the `options` of the URL.
+
+    Raises:
+        InvalidDatabaseUrlError: If the URL does not parse.
+
     """
-    url = settings.database_url.get_secret_value()
+    url = "postgresql://" + settings.database_url.get_secret_value().removeprefix(
+        PSYCOPG_SCHEME
+    )
+    params = _parse(url)
+    if params is None:
+        raise InvalidDatabaseUrlError
+    given = params.get("options")
+    search_path = f"-c search_path={SCHEMA}"
     return make_conninfo(
-        "postgresql://" + url.removeprefix(PSYCOPG_SCHEME),
-        options=f"-c search_path={SCHEMA}",
+        url, options=f"{given} {search_path}" if given else search_path
     )
 
 
+def _parse(url: str) -> dict[str, str | int | None] | None:
+    try:
+        return conninfo_to_dict(url)
+    except ProgrammingError:
+        return None
+
+
 async def setup_checkpointer(settings: CoreSettings) -> None:
-    """Make or migrate the checkpoint tables. Run it after `upgrade`."""
+    """Make or migrate the checkpoint tables, one time, after `upgrade`."""
     async with AsyncPostgresSaver.from_conn_string(
         checkpointer_conninfo(settings)
     ) as saver:
@@ -38,7 +65,7 @@ async def setup_checkpointer(settings: CoreSettings) -> None:
 async def open_checkpointer(
     settings: CoreSettings,
 ) -> AsyncGenerator[AsyncPostgresSaver]:
-    """Yield a saver on its own connection, with its tables set up.
+    """Yield a saver on its own connection. It makes no table.
 
     Yields:
         The saver. Its connection closes when the context ends.
@@ -47,5 +74,4 @@ async def open_checkpointer(
     async with AsyncPostgresSaver.from_conn_string(
         checkpointer_conninfo(settings)
     ) as saver:
-        await saver.setup()
         yield saver

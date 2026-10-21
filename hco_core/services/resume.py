@@ -19,6 +19,14 @@ if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
 
 
+class NotParkedError(RuntimeError):
+    """The thread of the run has no pending interrupt to resume."""
+
+    def __init__(self, run_id: str) -> None:
+        super().__init__(f"run {run_id!r} is not parked for approval")
+        self.run_id = run_id
+
+
 class RunResumer:
     """Resume the thread of a run with a new saver and a new compiled graph."""
 
@@ -37,6 +45,10 @@ class RunResumer:
 
         Call it only after the approval service closes the request. A run id
         that does not exist raises `RunNotFoundError`.
+
+        Raises:
+            NotParkedError: If the thread has no pending interrupt.
+
         """
         thread_id = (await self._runs.get_run(run_id)).thread_id
         config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
@@ -45,4 +57,6 @@ class RunResumer:
         )
         async with open_checkpointer(self._settings) as saver:
             graph = self._graph.compile(checkpointer=saver)  # pyright: ignore[reportUnknownMemberType]
+            if not (await graph.aget_state(config)).interrupts:
+                raise NotParkedError(run_id)
             await graph.ainvoke(Command(resume=payload), config, durability=DURABILITY)  # pyright: ignore[reportUnknownMemberType]
