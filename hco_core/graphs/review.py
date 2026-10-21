@@ -48,6 +48,11 @@ BLOCKABLE_STATES: Final = frozenset(
 )
 """The run states that `blocked` may move to `BLOCKED`. A run in another state stays."""
 
+NAMED_NEGATIONS: Final = 5
+"""The most unresolved negations that the gate error names."""
+NEGATION_CHARACTERS: Final = 120
+"""The longest negation text that the gate error shows."""
+
 type PluginFactory = Callable[[DeviceRecord], Iterable[Callable[..., None]]]
 """Return the remediation plugins of the device. Each takes the remediation tree."""
 
@@ -324,7 +329,7 @@ async def blocked(state: ReviewState, deps: ReviewDeps) -> ReviewState:
     errors: list[JsonValue] = list(_errors(state))
     unresolved = state.get("future_report", {}).get("unresolved_negations")
     if isinstance(unresolved, list) and unresolved:
-        errors.append(f"convergence gate: {len(unresolved)} unresolved negation(s)")
+        errors.append(gate_error(unresolved))
     written = await deps.runs.update_run(
         run_id,
         RunUpdate(state=RunState.BLOCKED, error={"errors": errors}),
@@ -332,6 +337,30 @@ async def blocked(state: ReviewState, deps: ReviewDeps) -> ReviewState:
         only_from=BLOCKABLE_STATES,
     )
     return {"run_state": RunState.BLOCKED.value} if written else {}
+
+
+def gate_error(unresolved: list[JsonValue]) -> str:
+    """Return the run error that names the unresolved negations.
+
+    It names the first `NAMED_NEGATIONS` lines, each cut to
+    `NEGATION_CHARACTERS`, and counts the rest.
+    """
+    named = ", ".join(
+        repr(_negation_text(item)[:NEGATION_CHARACTERS])
+        for item in unresolved[:NAMED_NEGATIONS]
+    )
+    rest = len(unresolved) - NAMED_NEGATIONS
+    more = f" and {rest} more" if rest > 0 else ""
+    return (
+        f"convergence gate: {len(unresolved)} unresolved negation(s): {named}{more}. "
+        "Each one removes a line that the running config does not have. "
+        "Remove or correct these lines in the intended config."
+    )
+
+
+def _negation_text(item: JsonValue) -> str:
+    text = item.get("text") if isinstance(item, dict) else None
+    return text if isinstance(text, str) else str(item)
 
 
 def _errors(state: ReviewState) -> list[str]:

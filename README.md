@@ -452,7 +452,9 @@ model. Compile a graph with a checkpointer, and start it with `start_run()`.
    future snapshot, and puts the config-derived facts in
    `evidence["config_derived"]`.
 3. The convergence gate sends a remediation with an unresolved negation to
-   `blocked`. Nothing after the gate runs then.
+   `blocked`. Nothing after the gate runs then. An unresolved negation is a
+   `no` line that matches nothing in the running config, so the change does
+   not do what it says. The run error names each such line.
 
 Any error from the source of truth, the device, the engine, or a plugin also
 ends the run in `BLOCKED`, with the error in `remediation_run.error`. A device
@@ -461,6 +463,80 @@ same. The graph input is `run_id`. A run past `COLLECTING` does not start
 again, and a node that runs again writes no second row.
 `build_collect_graph()` ends a run that passes the gate. `add_collect_nodes()`
 sends it to a node that you name.
+
+This example runs a run to the gate with the YAML source of truth and the mock
+driver. It reads `HCO_DATABASE_URL`. No service writes the `device` row yet, so
+the example adds it directly.
+
+```python
+import asyncio
+import tempfile
+from pathlib import Path
+
+from langgraph.checkpoint.memory import InMemorySaver
+
+from hco_core.adapters.conn.mock import MockConnectionDriver
+from hco_core.adapters.secrets.env import EnvSecretsProvider
+from hco_core.adapters.sot.yaml_file import YamlSourceOfTruth
+from hco_core.db import models
+from hco_core.db.migrate import upgrade
+from hco_core.db.session import create_database_engine, create_sessionmaker
+from hco_core.db.types import new_id
+from hco_core.graphs.review import ReviewDeps, build_collect_graph, start_run
+from hco_core.services.audit import Actor
+from hco_core.services.runs import RunRepository
+from hco_core.settings import CoreSettings
+
+folder = Path(tempfile.mkdtemp())
+(folder / "inventory.yaml").write_text(
+    "devices:\n"
+    "  - {id: edge-1, name: edge-1, platform_name: CISCO_IOS,\n"
+    "     mgmt_address: 10.0.0.1, intended_config: intended.txt}\n"
+)
+(folder / "intended.txt").write_text("hostname edge-1\nntp server 192.0.2.10\n")
+(folder / "transcripts" / "edge-1").mkdir(parents=True)
+(folder / "transcripts" / "edge-1" / "running.txt").write_text("hostname edge-1\n")
+
+settings = CoreSettings()
+upgrade(settings)
+
+
+async def review_to_the_gate() -> str:
+    engine = create_database_engine(settings)
+    sessions = create_sessionmaker(engine)
+    device_id = new_id()
+    async with sessions.begin() as session:
+        session.add(
+            models.Device(
+                id=device_id,
+                sot_name="yaml",
+                sot_device_id="edge-1",
+                name="edge-1",
+                platform_name="CISCO_IOS",
+                mgmt_address="10.0.0.1",
+            )
+        )
+    runs = RunRepository(sessions)
+    alice = Actor("alice", "user", "cli")
+    change_set_id = await runs.create_change_set("Add an NTP server", alice)
+    run_id = await runs.create_run(change_set_id, device_id, "thread-1", alice)
+    deps = ReviewDeps(
+        sot=YamlSourceOfTruth(folder / "inventory.yaml"),
+        secrets=EnvSecretsProvider(
+            {"HCO_SECRET_EDGE_1_USERNAME": "admin", "HCO_SECRET_EDGE_1_PASSWORD": "x"}
+        ),
+        connection=MockConnectionDriver(folder / "transcripts", token_key=b"k" * 32),
+        runs=runs,
+    )
+    graph = build_collect_graph(deps).compile(checkpointer=InMemorySaver())
+    await start_run(graph, {"run_id": run_id}, "thread-1")
+    state = (await runs.get_run(run_id)).state
+    await engine.dispose()
+    return state
+
+
+assert asyncio.run(review_to_the_gate()) == "REMEDIATING"
+```
 
 ## Requirements
 
