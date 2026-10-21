@@ -70,3 +70,9 @@ def test_env_example_names_every_core_setting() -> None:
     example = (ROOT / ".env.example").read_text(encoding="utf8")
     for name in CoreSettings.model_fields:
         assert f"HCO_{name.upper()}=" in example
+
+
+def test_ci_runs_the_interrupts_lint_rule_on_the_package() -> None:
+    """A second or a conditional `interrupt()` fails the build (AGENTS.md rule 4)."""
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf8")
+    assert "poetry run python -m hco_core.lint.interrupts hco_core" in workflow
