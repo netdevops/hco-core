@@ -84,6 +84,9 @@ ignore = [
     "undocumented-public-module",
 ]
 
+[tool.coverage.run]
+concurrency = ["greenlet", "thread"]
+
 [tool.coverage.report]
 fail_under = 95
 
