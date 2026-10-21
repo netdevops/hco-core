@@ -49,6 +49,7 @@ from tests.conftest import REQUESTER
 
 if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
+    from pydantic import JsonValue
 
 RUNNING = "hostname r1\ninterface GigabitEthernet1\n ip address 10.0.0.1 255.0.0.0\n"
 INTENDED = RUNNING + "ntp server 192.0.2.10\n"
@@ -388,7 +389,7 @@ def plugin_error(world: World, patch: pytest.MonkeyPatch) -> None:
 @pytest.mark.parametrize(
     ("arrange", "expected"),
     [
-        (unresolved_negation, "unresolved negation"),
+        (unresolved_negation, "negation(s): 'no ip http server'. Each one removes"),
         (unknown_device, "no device 'r9'"),
         (no_intent, "no intended"),
         (sot_unreachable, "source of truth is unreachable"),
@@ -461,6 +462,16 @@ def test_a_node_names_a_missing_key(runner: asyncio.Runner, world: World) -> Non
     with pytest.raises(review.MissingStateError, match="'run_id'"):
         runner.run(review.collect_running({}, world.deps))
     assert snapshot_kinds(world) == []
+
+
+def test_the_gate_error_names_at_most_five_lines() -> None:
+    """The error names the first five unresolved lines and counts the rest."""
+    unresolved: list[JsonValue] = [{"text": f"no vlan {number}"} for number in range(7)]
+    error = review.gate_error(unresolved)
+    assert "7 unresolved negation(s): 'no vlan 0', " in error
+    assert "'no vlan 4' and 2 more." in error
+    assert "no vlan 5" not in error
+    assert error.endswith("Remove or correct these lines in the intended config.")
 
 
 APPROVE = {"decision": "approve", "actor": "bob", "comment": "ok"}

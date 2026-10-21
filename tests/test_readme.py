@@ -28,6 +28,12 @@ def test_readme_has_examples() -> None:
 
 
 @pytest.mark.parametrize("block", python_blocks())
-def test_readme_block_executes(block: str) -> None:
-    """Each block runs on its own, with no imports the reader is not shown."""
+def test_readme_block_executes(block: str, request: pytest.FixtureRequest) -> None:
+    """Each block runs on its own, with no imports the reader is not shown.
+
+    A block that uses the database runs on the test database, and the tables
+    are emptied after it.
+    """
+    if "hco_core.db" in block:
+        request.getfixturevalue("clean_tables")
     exec(compile(block, "README.md", "exec"), {"__name__": "__readme__"})  # ruff: ignore[exec-builtin]
