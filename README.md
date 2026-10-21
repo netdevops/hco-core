@@ -734,6 +734,59 @@ It fails on these:
 Calls above the `interrupt()` are permitted, so make each one idempotent. The
 rule does not follow a local alias such as `ask = interrupt`, or `getattr`.
 
+## The REST API
+
+`hco_core.api.app.create_app(settings, deps)` builds the FastAPI app. No route
+writes to a device. A run stops at `AWAITING_APPROVAL`, and the approvals route
+arrives in a later Phase 1 release.
+
+| Route | Does |
+|---|---|
+| `GET /health` | 200 when the database answers, 503 when it does not. |
+| `POST /api/v1/devices/sync` | Writes each device of `HCO_SOT` to the `device` table. A second sync updates the rows. |
+| `GET /api/v1/devices`, `/{id}` | Lists the devices, or shows one by its row id or its source of truth id. |
+| `POST /api/v1/runs` | Creates a run on one device and returns 202. The review graph runs after the response. |
+| `GET /api/v1/runs`, `/{id}` | Lists the runs, newest first, or shows one with its state, tiers, and errors. |
+| `GET /api/v1/runs/{id}/diff` | Shows the remediation, the rollback, and the future config as lines. |
+
+- A list returns `items` and `next_cursor`. Send `?cursor=<next_cursor>` for the
+  next page, and `?limit=` for the page size (1 to 500).
+- An error is an RFC 9457 `application/problem+json` document with a stable
+  `type`, such as `urn:hco-core:problem:device-not-found`. It never shows a
+  config text, a `metadata` value, or a database URL. A run error shows a URL
+  with no user or password, and each error has 500 characters or fewer.
+- A request that changes data needs the `X-HCO-Actor` header. Without it, the
+  API returns 401. The name follows the rule of `ApprovalService`.
+
+WARNING: Any client can send any name in `X-HCO-Actor`. It is a development
+identity for Phase 1. Do not expose the API on a shared network. Phase 3
+replaces the header with OIDC.
+
+Start the API on port 8080. It reads the `HCO_` variables, and
+`HCO_VALIDATION_KEY` is necessary:
+
+```bash
+export HCO_SOT_PATH=inventory.yaml HCO_TRANSCRIPTS_DIR=transcripts
+export HCO_VALIDATION_KEY=$(python -c "import secrets; print(secrets.token_hex(32))")
+poetry run uvicorn --factory hco_core.api.app:app_from_env --port 8080
+```
+
+Read the inventory, start a run, and read the diff:
+
+```bash
+curl -s -X POST -H 'X-HCO-Actor: alice' localhost:8080/api/v1/devices/sync
+curl -s -X POST -H 'X-HCO-Actor: alice' -H 'Content-Type: application/json' \
+  -d '{"device_id": "r1"}' localhost:8080/api/v1/runs
+curl -s localhost:8080/api/v1/runs/<run_id>
+curl -s localhost:8080/api/v1/runs/<run_id>/diff
+```
+
+The mock connection reads the running config of device `r1` from
+`transcripts/r1/running.txt`, with the credentials of the `env` provider, for
+example `HCO_SECRET_R1_USERNAME` and `HCO_SECRET_R1_PASSWORD`. If the process
+stops before a run parks, the run stays in its last state. Phase 1 does not
+continue it.
+
 ## Requirements
 
 Python 3.12 to 3.14.

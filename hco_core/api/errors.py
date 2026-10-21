@@ -38,6 +38,10 @@ class DatabaseUnavailableError(RuntimeError):
     """The database does not answer."""
 
 
+class SourceOfTruthUnavailableError(RuntimeError):
+    """The source of truth cannot be read."""
+
+
 class RunNotReadyError(RuntimeError):
     """The run has no remediation yet."""
 
@@ -67,6 +71,12 @@ PROBLEMS: Final[dict[type[Exception], Problem]] = {
         "database-unavailable",
         "Database unavailable",
         "the database is unreachable",
+    ),
+    SourceOfTruthUnavailableError: Problem(
+        503,
+        "sot-unavailable",
+        "Source of truth unavailable",
+        "the source of truth is not readable",
     ),
     UnknownPlatformError: Problem(
         400, "unknown-platform", "Unknown platform", "no driver has the platform name"

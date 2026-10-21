@@ -148,3 +148,14 @@ def test_an_unknown_device_is_404_naming_the_id(api: Api) -> None:
     assert response.status_code == HTTPStatus.NOT_FOUND
     assert response.headers["content-type"] == PROBLEM_JSON
     assert "'missing'" in response.json()["detail"]
+
+
+def test_a_missing_inventory_file_is_503_with_no_path(api: Api) -> None:
+    """The source of truth is not readable, and the document shows no path."""
+    (api.root / "inventory.yaml").unlink()
+
+    response = api.call("POST", "/api/v1/devices/sync", actor=ACTOR)
+
+    assert response.status_code == HTTPStatus.SERVICE_UNAVAILABLE
+    assert response.json()["type"] == "urn:hco-core:problem:sot-unavailable"
+    assert str(api.root) not in response.text

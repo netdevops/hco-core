@@ -10,6 +10,7 @@ from sqlalchemy.dialects.postgresql import Insert, insert
 from hco_core.adapters.errors import DeviceNotFoundError
 from hco_core.api.actor import current_actor
 from hco_core.api.deps import DEFAULT_PAGE, ApiDeps, Cursor, Limit
+from hco_core.api.errors import SourceOfTruthUnavailableError
 from hco_core.db import models
 from hco_core.db.types import new_id
 from hco_core.domain.base import BaseModel
@@ -134,7 +135,10 @@ async def _all_devices(sot: SourceOfTruth) -> list[DeviceRecord]:
     records: list[DeviceRecord] = []
     cursor: str | None = None
     while True:
-        page = await sot.list_devices(cursor=cursor)
+        try:
+            page = await sot.list_devices(cursor=cursor)
+        except OSError as error:
+            raise SourceOfTruthUnavailableError from error
         records.extend(page.devices)
         cursor = page.cursor
         if cursor is None:
