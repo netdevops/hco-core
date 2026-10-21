@@ -127,7 +127,7 @@ class ApprovalService:
                 than this call asks for.
 
         """
-        if not _is_valid_name(requester):
+        if not is_valid_name(requester):
             raise InvalidActorError(requester)
         if expires_at.utcoffset() is None:
             message = f"the expiry {expires_at.isoformat()} has no time zone"
@@ -205,7 +205,7 @@ class ApprovalService:
             DuplicateDecisionError: If the actor already decided.
 
         """
-        if not _is_valid_name(actor):
+        if not is_valid_name(actor):
             raise InvalidActorError(actor)
         identity = _identity(actor)
         async with self._sessions.begin() as session:
@@ -283,7 +283,8 @@ class ApprovalService:
             return _to_request(row), tuple(_to_decision(item) for item in decisions)
 
 
-def _is_valid_name(name: str) -> bool:
+def is_valid_name(name: str) -> bool:
+    """Return True if the name is a valid actor name: printable, trimmed, and visible."""
     return (
         bool(name)
         and name == name.strip()
