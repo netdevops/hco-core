@@ -18,6 +18,11 @@ Permissive (MIT, Apache-2.0, BSD-3-Clause, PSF-2.0)
   langgraph          MIT                  https://github.com/langchain-ai/langgraph
   langgraph-checkpoint-postgres
                      MIT                  https://github.com/langchain-ai/langgraph
+  fastapi            MIT                  https://github.com/fastapi/fastapi
+  starlette          BSD-3-Clause         https://github.com/Kludex/starlette
+  uvicorn[standard]  BSD-3-Clause         https://github.com/Kludex/uvicorn
+      with httptools (MIT), uvloop (MIT OR Apache-2.0), watchfiles (MIT),
+      websockets (BSD-3-Clause), and python-dotenv (BSD-3-Clause)
 
 These impose no obligation beyond attribution.
 

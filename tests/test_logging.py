@@ -2,27 +2,12 @@
 
 import json
 import logging
-from collections.abc import Iterator
 
 import pytest
 import structlog
 
 from hco_core.logging import UVICORN_LOGGERS, configure_logging
 from hco_core.settings import CoreSettings
-
-
-@pytest.fixture
-def restore_logging() -> Iterator[None]:
-    """Put back the root handlers and the structlog defaults after each test."""
-    root = logging.getLogger()
-    handlers = root.handlers[:]
-    level = root.level
-    yield
-    root.handlers = handlers
-    root.setLevel(level)
-    structlog.reset_defaults()
-    structlog.contextvars.clear_contextvars()
-
 
 pytestmark = pytest.mark.usefixtures("restore_logging")
 
