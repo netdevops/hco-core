@@ -16,6 +16,8 @@ Permissive (MIT, Apache-2.0, BSD-3-Clause, PSF-2.0)
   structlog          MIT OR Apache-2.0    https://github.com/hynek/structlog
   python-ulid        MIT                  https://github.com/mdomke/python-ulid
   langgraph          MIT                  https://github.com/langchain-ai/langgraph
+  langgraph-checkpoint-postgres
+                     MIT                  https://github.com/langchain-ai/langgraph
 
 These impose no obligation beyond attribution.
 
@@ -24,8 +26,9 @@ Weak copyleft
   psycopg, psycopg-binary, psycopg-pool    LGPL-3.0-only
       https://github.com/psycopg/psycopg
 
-  hco-core uses psycopg unmodified, as the Postgres driver of SQLAlchemy.
-  Only the hco_core.db package loads it. You can replace it with a different
+  hco-core uses psycopg unmodified, as the Postgres driver of SQLAlchemy and
+  of the LangGraph checkpointer. Only the hco_core.db package and the
+  hco_core.graphs.checkpointer module load it. You can replace it with a different
   build of psycopg 3 without a change to hco-core. The psycopg-binary wheel
   also contains libpq (PostgreSQL License) and OpenSSL (Apache-2.0).
 
