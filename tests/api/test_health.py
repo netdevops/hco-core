@@ -134,3 +134,24 @@ def test_the_request_id_middleware_passes_a_lifespan_scope_through(
     )
 
     assert seen == ["lifespan"]
+
+
+def test_a_405_keeps_the_allow_header(api: Api) -> None:
+    """The problem document keeps the headers of the framework error."""
+    response = api.call("PUT", "/health")
+
+    assert response.status_code == HTTPStatus.METHOD_NOT_ALLOWED
+    assert response.headers["allow"] == "GET"
+
+
+@pytest.mark.parametrize("path", ["/docs", "/redoc"])
+def test_the_api_serves_no_html_documentation(api: Api, path: str) -> None:
+    """The schema is at `/openapi.json`. No page loads a script from a CDN."""
+    assert api.call("GET", path).status_code == HTTPStatus.NOT_FOUND
+    assert api.call("GET", "/openapi.json").status_code == HTTPStatus.OK
+
+
+def test_each_response_says_nosniff(api: Api) -> None:
+    """A browser must not guess a content type from a device field."""
+    for path in ("/health", "/api/v1/nothing"):
+        assert api.call("GET", path).headers["x-content-type-options"] == "nosniff"

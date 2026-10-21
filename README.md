@@ -752,7 +752,10 @@ Phase 1 releases.
   `type`, such as `urn:hco-core:problem:device-not-found`. It never shows a
   config text, a `metadata` value, or a database URL.
 - A request that changes data needs the `X-HCO-Actor` header. Without it, the
-  API returns 401. The name follows the rule of `ApprovalService`.
+  API returns 401. Send the name as UTF-8. The API stores its NFKC form, and
+  the name follows the rule of `ApprovalService`.
+- `GET /openapi.json` gives the OpenAPI schema. The API serves no HTML page.
+- A sync writes the devices in chunks of 1000 rows, in one transaction.
 
 WARNING: Any client can send any name in `X-HCO-Actor`. It is a development
 identity for Phase 1. Do not expose the API on a shared network. Phase 3

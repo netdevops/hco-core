@@ -1,11 +1,21 @@
 """The device routes: sync from the source of truth, list, and show."""
 
+import asyncio
+from dataclasses import replace
 from http import HTTPStatus
 
-from sqlalchemy import Engine, text
+import pytest
+from pydantic import SecretStr
+from sqlalchemy import Engine, TextClause, text
+from structlog.testing import capture_logs
 
+from hco_core.api.app import create_app
 from hco_core.api.errors import PROBLEM_JSON
+from hco_core.api.routers import devices
+from hco_core.db.session import create_database_engine, create_sessionmaker
+from hco_core.settings import CoreSettings
 from tests.api.conftest import ACTOR, Api, write_inventory
+from tests.api.test_health import UNREACHABLE_URL
 
 UNKNOWN_PLATFORM = """devices:
   - id: r9
@@ -13,6 +23,8 @@ UNKNOWN_PLATFORM = """devices:
     platform_name: NOT_A_PLATFORM
     mgmt_address: 10.0.0.9
 """
+LARGE_INVENTORY = 6000
+"""More devices than one statement takes, at 13 parameters for each."""
 
 
 def test_sync_writes_each_device_of_the_source_of_truth(api: Api) -> None:
@@ -159,3 +171,109 @@ def test_a_missing_inventory_file_is_503_with_no_path(api: Api) -> None:
     assert response.status_code == HTTPStatus.SERVICE_UNAVAILABLE
     assert response.json()["type"] == "urn:hco-core:problem:sot-unavailable"
     assert str(api.root) not in response.text
+
+
+def test_a_sync_larger_than_one_statement_writes_every_device(
+    api: Api, engine: Engine
+) -> None:
+    """6000 devices pass the parameter limit of one statement, with one audit row."""
+    devices = "".join(
+        f"  - {{id: d{index}, name: d{index}, platform_name: CISCO_IOS, mgmt_address: 10.0.0.1}}\n"
+        for index in range(LARGE_INVENTORY)
+    )
+    write_inventory(api.root, f"devices:\n{devices}")
+
+    response = api.call("POST", "/api/v1/devices/sync", actor=ACTOR)
+
+    assert response.json() == {"synced": LARGE_INVENTORY}
+    with engine.connect() as connection:
+        assert (
+            connection.execute(text("SELECT count(*) FROM hco.device")).scalar_one()
+            == LARGE_INVENTORY
+        )
+        assert (
+            connection.execute(
+                text("SELECT count(*) FROM hco.audit_event")
+            ).scalar_one()
+            == 1
+        )
+
+
+def failing_statement(sot_name: str, records: object) -> TextClause:
+    """Return a statement that the database refuses."""
+    del sot_name, records
+    return text("SELECT 1/0")
+
+
+def test_a_failed_sync_logs_the_count_and_no_row(
+    api: Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A database error in the sync is a 500 problem, and the log has no device."""
+    monkeypatch.setattr(devices, "_upsert", failing_statement)
+
+    with capture_logs() as lines:
+        response = api.call("POST", "/api/v1/devices/sync", actor=ACTOR)
+
+    assert response.status_code == HTTPStatus.INTERNAL_SERVER_ERROR
+    assert response.json()["type"] == "urn:hco-core:problem:device-sync-failed"
+    assert {
+        "event": "device_sync_failed",
+        "log_level": "error",
+        "count": 2,
+        "error": "DataError",
+    } in lines
+    assert "edge-1" not in repr(lines)
+
+
+@pytest.mark.parametrize("cursor", ["%00", "not-a-ulid", "01JDEVICE0000000000000000a"])
+def test_a_cursor_that_is_not_a_ulid_is_a_422_problem(api: Api, cursor: str) -> None:
+    """The cursor is the id of a device row."""
+    response = api.call("GET", f"/api/v1/devices?cursor={cursor}")
+
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+    assert response.json()["errors"][0]["loc"] == ["query", "cursor"]
+
+
+@pytest.mark.parametrize("device_id", ["%00", "r1%00"])
+def test_an_id_with_a_nul_is_404(api: Api, device_id: str) -> None:
+    """No device id holds a NUL, so the API does not ask the database."""
+    api.call("POST", "/api/v1/devices/sync", actor=ACTOR)
+
+    response = api.call("GET", f"/api/v1/devices/{device_id}")
+
+    assert response.status_code == HTTPStatus.NOT_FOUND
+
+
+def test_the_row_id_wins_over_a_source_of_truth_id(api: Api) -> None:
+    """A source of truth id equal to the row id of another device does not shadow it."""
+    api.call("POST", "/api/v1/devices/sync", actor=ACTOR)
+    row_id = api.call("GET", "/api/v1/devices/r1").json()["id"]
+    shadow = f"  - {{id: {row_id}, name: shadow, platform_name: CISCO_IOS, mgmt_address: 10.0.0.9}}\n"
+    write_inventory(api.root, (api.root / "inventory.yaml").read_text() + shadow)
+    api.call("POST", "/api/v1/devices/sync", actor=ACTOR)
+
+    response = api.call("GET", f"/api/v1/devices/{row_id}")
+
+    assert response.json()["sot_device_id"] == "r1"
+
+
+def test_the_list_and_the_sync_are_503_when_the_database_is_down(
+    api: Api, runner: asyncio.Runner
+) -> None:
+    """A database that does not answer gives the same problem as `/health`."""
+    engine = create_database_engine(
+        CoreSettings(database_url=SecretStr(UNREACHABLE_URL))
+    )
+    deps = replace(api.deps, engine=engine, sessions=create_sessionmaker(engine))
+    down = Api(runner, create_app(CoreSettings(), deps), deps, api.root)
+
+    for method, path in (
+        ("GET", "/api/v1/devices"),
+        ("GET", "/api/v1/devices/r1"),
+        ("POST", "/api/v1/devices/sync"),
+    ):
+        response = down.call(method, path, actor=ACTOR)
+
+        assert response.status_code == HTTPStatus.SERVICE_UNAVAILABLE
+        assert response.json()["type"] == "urn:hco-core:problem:database-unavailable"
+    runner.run(engine.dispose())

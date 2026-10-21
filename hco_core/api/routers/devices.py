@@ -3,14 +3,21 @@
 from datetime import datetime
 from typing import Annotated
 
+import structlog
 from fastapi import APIRouter, Depends
 from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.postgresql import Insert, insert
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from hco_core.adapters.errors import DeviceNotFoundError
 from hco_core.api.actor import current_actor
 from hco_core.api.deps import DEFAULT_PAGE, ApiDeps, Cursor, Limit
-from hco_core.api.errors import SourceOfTruthUnavailableError
+from hco_core.api.errors import (
+    DeviceSyncError,
+    SourceOfTruthUnavailableError,
+    database_errors,
+)
 from hco_core.db import models
 from hco_core.db.types import new_id
 from hco_core.domain.base import BaseModel
@@ -19,6 +26,13 @@ from hco_core.ports import SourceOfTruth
 from hco_core.services.audit import Actor, AuditEntry, add_audit_event
 
 _UNIQUE_DEVICE = "uq_device_tenant_id_sot_name_sot_device_id"
+SYNC_CHUNK = 1000
+"""The devices in one upsert statement. Postgres takes at most 65535 parameters."""
+
+SOT_PAGE = 5000
+"""The devices that the sync asks the source of truth for in one page."""
+
+_log = structlog.get_logger(__name__)
 
 
 class Device(BaseModel):
@@ -65,8 +79,9 @@ def devices_router(deps: ApiDeps) -> APIRouter:
         query = select(models.Device).order_by(models.Device.id).limit(limit + 1)
         if cursor is not None:
             query = query.where(models.Device.id > cursor)
-        async with deps.sessions() as session:
-            rows = (await session.execute(query)).scalars().all()
+        with database_errors():
+            async with deps.sessions() as session:
+                rows = (await session.execute(query)).scalars().all()
         items = tuple(_device(row) for row in rows[:limit])
         return DevicePage(
             items=items, next_cursor=items[-1].id if len(rows) > limit else None
@@ -83,19 +98,9 @@ def devices_router(deps: ApiDeps) -> APIRouter:
     ) -> SyncResult:
         """Write every device of the source of truth. A known device is updated."""
         records = await _all_devices(sot)
-        async with deps.sessions.begin() as session:
-            if records:
-                await session.execute(_upsert(sot.name, records))
-            add_audit_event(
-                session,
-                AuditEntry(
-                    actor=actor,
-                    action="device.sync",
-                    object_type="device",
-                    object_id=sot.name,
-                    after={"count": len(records)},
-                ),
-            )
+        with database_errors():
+            async with deps.sessions.begin() as session:
+                await _store(session, sot.name, records, actor)
         return SyncResult(synced=len(records))
 
     return router
@@ -120,8 +125,11 @@ async def find_device(deps: ApiDeps, device_id: str) -> models.Device:
         .order_by(models.Device.id != device_id)
         .limit(1)
     )
-    async with deps.sessions() as session:
-        device = (await session.execute(query)).scalar_one_or_none()
+    device = None
+    if "\x00" not in device_id:
+        with database_errors():
+            async with deps.sessions() as session:
+                device = (await session.execute(query)).scalar_one_or_none()
     if device is None:
         message = (
             f"no device {device_id!r}; POST /api/v1/devices/sync reads the "
@@ -136,13 +144,49 @@ async def _all_devices(sot: SourceOfTruth) -> list[DeviceRecord]:
     cursor: str | None = None
     while True:
         try:
-            page = await sot.list_devices(cursor=cursor)
+            page = await sot.list_devices(cursor=cursor, limit=SOT_PAGE)
         except OSError as error:
             raise SourceOfTruthUnavailableError from error
         records.extend(page.devices)
         cursor = page.cursor
         if cursor is None:
             return records
+
+
+async def _store(
+    session: AsyncSession, sot_name: str, records: list[DeviceRecord], actor: Actor
+) -> None:
+    """Connect, then write the records and one audit event in the transaction."""
+    await session.connection()
+    await _write(session, sot_name, records)
+    add_audit_event(
+        session,
+        AuditEntry(
+            actor=actor,
+            action="device.sync",
+            object_type="device",
+            object_id=sot_name,
+            after={"count": len(records)},
+        ),
+    )
+
+
+async def _write(
+    session: AsyncSession, sot_name: str, records: list[DeviceRecord]
+) -> None:
+    """Upsert the records in chunks. A refusal logs the count, never a row.
+
+    Raises:
+        DeviceSyncError: If the database refuses a statement.
+
+    """
+    try:
+        for start in range(0, len(records), SYNC_CHUNK):
+            chunk = records[start : start + SYNC_CHUNK]
+            await session.execute(_upsert(sot_name, chunk))
+    except SQLAlchemyError as error:
+        _log.error("device_sync_failed", count=len(records), error=type(error).__name__)
+        raise DeviceSyncError from None
 
 
 def _upsert(sot_name: str, records: list[DeviceRecord]) -> Insert:
