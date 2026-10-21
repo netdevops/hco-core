@@ -1,6 +1,8 @@
 """The interrupts lint rule keeps each node to one unconditional `interrupt()`."""
 
 import inspect
+import subprocess  # ruff: ignore[suspicious-subprocess-import]
+import sys
 import textwrap
 from pathlib import Path
 
@@ -221,3 +223,18 @@ def test_main_exits_2_on_a_usage_error(
 def test_the_hco_core_package_passes() -> None:
     """The rule holds on the package that CI checks."""
     assert check([Path(review.__file__).parent.parent]) == []
+
+
+def test_the_module_command_exits_1_on_a_violation(tmp_path: Path) -> None:
+    """`python -m hco_core.lint.interrupts`, as CI runs it, fails the build."""
+    path = write(tmp_path, FAILING["while"])
+
+    done = subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
+        [sys.executable, "-m", "hco_core.lint.interrupts", str(path)],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert done.returncode == 1
+    assert done.stdout == f"{path}:4: node: interrupt() inside while\n"
