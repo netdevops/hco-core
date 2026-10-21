@@ -1,12 +1,13 @@
 """A run parked in Postgres resumes in a new graph with a new saver (AC-2, AC-3)."""
 
 import asyncio
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.types import Command
 from pydantic import SecretStr
 from sqlalchemy import Engine, inspect
@@ -15,17 +16,17 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from hco_core.adapters.conn.mock import MockConnectionDriver
 from hco_core.adapters.secrets.env import EnvSecretsProvider
 from hco_core.adapters.sot.yaml_file import YamlSourceOfTruth
+from hco_core.db.models import CHECKPOINT_TABLES, SCHEMA
 from hco_core.db.types import new_id
 from hco_core.domain.approval import ApprovalDecision, ApprovalRequest, Decision
 from hco_core.graphs import review
 from hco_core.graphs.checkpointer import (
-    CHECKPOINT_SCHEMA,
-    CHECKPOINT_TABLES,
     checkpointer_conninfo,
     open_checkpointer,
     setup_checkpointer,
 )
 from hco_core.graphs.review import (
+    DURABILITY,
     ApprovalDeps,
     ReviewState,
     build_review_graph,
@@ -44,6 +45,7 @@ from tests.graphs.test_review import (
     INTENDED,
     INVENTORY,
     RUNNING,
+    Graph,
     RecordingChannel,
     no_resume,
     scalar_rows,
@@ -107,15 +109,24 @@ def parked(
         "change_set_id": change_set_id,
         "requested_by": REQUESTER,
     }
-    url = engine.url.render_as_string(hide_password=False)
-    settings = CoreSettings(database_url=SecretStr(url))
-    return Parked(sessions, settings, engine, state, thread_id, tmp_path)
+    return Parked(sessions, CoreSettings(), engine, state, thread_id, tmp_path)
+
+
+@asynccontextmanager
+async def new_graph(parked: Parked) -> AsyncGenerator[Graph]:
+    """Give a new review graph on a new saver, as a new process builds it.
+
+    Yields:
+        The compiled graph. Its saver closes when the context ends.
+
+    """
+    async with open_checkpointer(parked.settings) as saver:
+        yield build_review_graph(parked.deps()).compile(checkpointer=saver)  # pyright: ignore[reportUnknownMemberType]
 
 
 async def park(parked: Parked) -> tuple[str, ...]:
     """Run the review graph with saver 1 and graph 1 until it parks."""
-    async with open_checkpointer(parked.settings) as saver:
-        graph = build_review_graph(parked.deps()).compile(checkpointer=saver)  # pyright: ignore[reportUnknownMemberType]
+    async with new_graph(parked) as graph:
         await start_run(graph, parked.state, parked.thread_id)
         return (await graph.aget_state(parked.config())).next
 
@@ -130,15 +141,14 @@ async def approve(parked: Parked, resume: Resume = no_resume) -> None:
 
 async def resume_in_a_new_graph(parked: Parked) -> None:
     """Resume the thread with saver 2 and graph 2, as a new process does."""
-    async with open_checkpointer(parked.settings) as saver:
-        graph = build_review_graph(parked.deps()).compile(checkpointer=saver)  # pyright: ignore[reportUnknownMemberType]
-        await graph.ainvoke(Command(resume=APPROVE), parked.config(), durability="sync")  # pyright: ignore[reportUnknownMemberType]
+    command = Command(resume=APPROVE)
+    async with new_graph(parked) as graph:
+        await graph.ainvoke(command, parked.config(), durability=DURABILITY)  # pyright: ignore[reportUnknownMemberType]
 
 
 async def next_nodes(parked: Parked) -> tuple[str, ...]:
     """Return the next nodes of the thread, read with saver 3."""
-    async with open_checkpointer(parked.settings) as saver:
-        graph = build_review_graph(parked.deps()).compile(checkpointer=saver)  # pyright: ignore[reportUnknownMemberType]
+    async with new_graph(parked) as graph:
         return (await graph.aget_state(parked.config())).next
 
 
@@ -219,20 +229,8 @@ def test_the_saver_keeps_its_tables_in_the_hco_schema(
     runner.run(setup_checkpointer(parked.settings))
     runner.run(setup_checkpointer(parked.settings))
 
-    tables = set(inspect(parked.engine).get_table_names(schema=CHECKPOINT_SCHEMA))
+    tables = set(inspect(parked.engine).get_table_names(schema=SCHEMA))
     assert tables >= CHECKPOINT_TABLES
-
-
-def test_open_checkpointer_yields_a_postgres_saver(
-    runner: asyncio.Runner, parked: Parked
-) -> None:
-    """The saver is the LangGraph Postgres saver."""
-
-    async def kind() -> type:
-        async with open_checkpointer(parked.settings) as saver:
-            return type(saver)
-
-    assert runner.run(kind()) is AsyncPostgresSaver
 
 
 def test_the_conninfo_is_plain_libpq_with_the_hco_search_path() -> None:

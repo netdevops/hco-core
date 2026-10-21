@@ -82,8 +82,7 @@ def _check_file(path: Path) -> list[Violation]:
     for scope in [module, *_scopes(module)]:
         name = scope.name if isinstance(scope, _SCOPES) else _MODULE
         in_function = isinstance(scope, _FUNCTIONS)
-        calls = list(_calls(scope, names, ()))
-        for index, (call, enclosing) in enumerate(calls):
+        for index, (call, enclosing) in enumerate(_calls(scope, names, ())):
             message = _message(index, enclosing, in_function=in_function)
             if message:
                 violations.append(Violation(path, call.lineno, name, message))

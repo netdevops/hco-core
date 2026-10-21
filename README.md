@@ -670,8 +670,8 @@ A run can wait days for a person. `open_checkpointer(settings)` gives an
 Compile the review graph with this saver in production. Use `InMemorySaver`
 only in tests.
 
-- The saver keeps its four tables (`CHECKPOINT_TABLES`) in schema `hco`. The
-  Alembic chain does not own them.
+- The saver keeps its four tables (`hco_core.db.models.CHECKPOINT_TABLES`) in
+  schema `hco`. The Alembic chain does not own them.
 - Run `upgrade(settings)` first, because it makes schema `hco`. Then run
   `setup_checkpointer(settings)` one time. `open_checkpointer` also runs the
   setup, and the setup is safe to run again.

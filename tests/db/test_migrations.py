@@ -10,8 +10,7 @@ from sqlalchemy import CheckConstraint, Engine, create_engine, inspect, text
 from sqlalchemy.dialects.postgresql import TIMESTAMP
 
 from hco_core.db.migrate import ALEMBIC_INI, downgrade, upgrade
-from hco_core.db.models import Base
-from hco_core.graphs.checkpointer import CHECKPOINT_TABLES
+from hco_core.db.models import Base, owned_by_alembic
 from hco_core.settings import CoreSettings
 from tests.conftest import TABLES
 
@@ -95,12 +94,6 @@ def test_upgrade_downgrade_upgrade(engine: Engine, database_url: str) -> None:
     assert set(TABLES) <= set(inspect(engine).get_table_names(schema="hco"))
 
 
-def not_a_checkpoint_table(name: str | None, type_: str, parent_names: object) -> bool:
-    """Return False for a table that the LangGraph saver owns."""
-    del parent_names
-    return type_ != "table" or name not in CHECKPOINT_TABLES
-
-
 def test_the_models_match_the_migration(database_url: str) -> None:
     """The ORM models and the migrated schema have no difference.
 
@@ -118,7 +111,7 @@ def test_the_models_match_the_migration(database_url: str) -> None:
                 opts={
                     "include_schemas": True,
                     "version_table_schema": "hco",
-                    "include_name": not_a_checkpoint_table,
+                    "include_name": owned_by_alembic,
                 },
             )
             differences = compare_metadata(context, Base.metadata)
