@@ -99,6 +99,10 @@ FAILING = {
     "module-level": """
         answer = interrupt("a")
     """,
+    "class-body": """
+        class Node:
+            answer = interrupt("a")
+    """,
     "alias": """
         from langgraph.types import interrupt as pause
 

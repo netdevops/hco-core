@@ -37,7 +37,8 @@ _CONDITIONAL: Final[dict[type[ast.AST], str]] = {
     ast.GeneratorExp: "a comprehension",
     ast.Lambda: "a lambda",
 }
-_SCOPES: Final = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+_FUNCTIONS: Final = (ast.FunctionDef, ast.AsyncFunctionDef)
+_SCOPES: Final = (*_FUNCTIONS, ast.ClassDef)
 _MODULE: Final = "<module>"
 
 
@@ -78,20 +79,21 @@ def _check_file(path: Path) -> list[Violation]:
         ]
     names = _interrupt_names(module)
     violations: list[Violation] = []
-    for scope in [module, *_functions(module)]:
+    for scope in [module, *_scopes(module)]:
         name = scope.name if isinstance(scope, _SCOPES) else _MODULE
+        in_function = isinstance(scope, _FUNCTIONS)
         calls = list(_calls(scope, names, ()))
         for index, (call, enclosing) in enumerate(calls):
-            message = _message(name, index, enclosing)
+            message = _message(index, enclosing, in_function=in_function)
             if message:
                 violations.append(Violation(path, call.lineno, name, message))
     return sorted(violations, key=lambda violation: violation.line)
 
 
-def _message(scope: str, index: int, enclosing: tuple[str, ...]) -> str:
+def _message(index: int, enclosing: tuple[str, ...], *, in_function: bool) -> str:
     if enclosing:
         return f"{INTERRUPT}() inside {enclosing[-1]}"
-    if scope == _MODULE:
+    if not in_function:
         return f"{INTERRUPT}() outside a function"
     if index:
         return f"second {INTERRUPT}() call"
@@ -109,9 +111,11 @@ def _interrupt_names(module: ast.Module) -> frozenset[str]:
     return frozenset({INTERRUPT, *aliases})
 
 
-def _functions(module: ast.Module) -> Iterator[ast.FunctionDef | ast.AsyncFunctionDef]:
+def _scopes(
+    module: ast.Module,
+) -> Iterator[ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef]:
     for node in ast.walk(module):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if isinstance(node, _SCOPES):
             yield node
 
 
