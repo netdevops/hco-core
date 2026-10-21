@@ -36,12 +36,13 @@ class RunStateError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class RunView:
-    """The state of a run and the source of truth identity of its device."""
+    """The state and the thread of a run, and the source of truth identity of its device."""
 
     state: RunState
     device_id: str
     sot_device_id: str
     platform_name: str
+    thread_id: str
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -136,6 +137,7 @@ class RunRepository:
                         models.Device.id,
                         models.Device.sot_device_id,
                         models.Device.platform_name,
+                        models.RemediationRun.thread_id,
                     )
                     .join(models.Device)
                     .where(models.RemediationRun.id == run_id)
@@ -144,7 +146,7 @@ class RunRepository:
         if row is None:
             message = f"no remediation run {run_id!r}"
             raise RunNotFoundError(message)
-        return RunView(RunState(row[0]), row[1], row[2], row[3])
+        return RunView(RunState(row[0]), row[1], row[2], row[3], row[4])
 
     async def update_run(
         self,
