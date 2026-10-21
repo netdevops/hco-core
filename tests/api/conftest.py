@@ -49,11 +49,12 @@ class Api:
         method: str,
         path: str,
         *,
-        actor: str | None = None,
+        actor: str | bytes | None = None,
         json: Mapping[str, object] | None = None,
     ) -> httpx.Response:
-        """Send one request, with the actor header when an actor is given."""
-        headers = {} if actor is None else {ACTOR_HEADER: actor}
+        """Send one request, with the actor header as UTF-8 when an actor is given."""
+        value = actor.encode() if isinstance(actor, str) else actor
+        headers = {} if value is None else {ACTOR_HEADER.encode(): value}
         return self.runner.run(_send(self.app, method, path, headers, json))
 
 
@@ -61,7 +62,7 @@ async def _send(
     app: FastAPI,
     method: str,
     path: str,
-    headers: Mapping[str, str],
+    headers: Mapping[bytes, bytes],
     json: Mapping[str, object] | None,
 ) -> httpx.Response:
     transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)

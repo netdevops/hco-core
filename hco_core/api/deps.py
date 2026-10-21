@@ -19,10 +19,12 @@ from hco_core.settings import CoreSettings
 API_PREFIX: Final = "/api/v1"
 DEFAULT_PAGE: Final = 50
 MAX_PAGE: Final = 500
+ULID_PATTERN: Final = rf"^[0-9A-HJKMNP-TV-Z]{{{ULID_LENGTH}}}$"
+"""A ULID in Crockford base 32, as `new_id` makes it."""
 
 type Limit = Annotated[int, Query(ge=1, le=MAX_PAGE)]
 """The most items in one page."""
-type Cursor = Annotated[str | None, Query(max_length=ULID_LENGTH)]
+type Cursor = Annotated[str | None, Query(pattern=ULID_PATTERN)]
 """The `next_cursor` of the page before, or nothing for the first page."""
 
 
