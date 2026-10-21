@@ -6,19 +6,12 @@ The saver keeps its four tables in schema `hco`, next to the hco-core tables.
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import Final
 
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg.conninfo import make_conninfo
 
 from hco_core.db.models import SCHEMA
 from hco_core.settings import PSYCOPG_SCHEME, CoreSettings
-
-CHECKPOINT_SCHEMA: Final = SCHEMA
-CHECKPOINT_TABLES: Final = frozenset(
-    {"checkpoints", "checkpoint_blobs", "checkpoint_writes", "checkpoint_migrations"}
-)
-"""The tables that `AsyncPostgresSaver.setup()` makes. The Alembic chain does not own them."""
 
 
 def checkpointer_conninfo(settings: CoreSettings) -> str:
@@ -29,7 +22,7 @@ def checkpointer_conninfo(settings: CoreSettings) -> str:
     url = settings.database_url.get_secret_value()
     return make_conninfo(
         "postgresql://" + url.removeprefix(PSYCOPG_SCHEME),
-        options=f"-c search_path={CHECKPOINT_SCHEMA}",
+        options=f"-c search_path={SCHEMA}",
     )
 
 

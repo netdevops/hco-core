@@ -40,11 +40,9 @@ class RunResumer:
         """
         thread_id = (await self._runs.get_run(run_id)).thread_id
         config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
-        payload = {
-            "decision": decision.decision.value,
-            "actor": decision.actor,
-            "comment": decision.comment,
-        }
+        payload = decision.model_dump(
+            mode="json", include={"decision", "actor", "comment"}
+        )
         async with open_checkpointer(self._settings) as saver:
             graph = self._graph.compile(checkpointer=saver)  # pyright: ignore[reportUnknownMemberType]
             await graph.ainvoke(Command(resume=payload), config, durability=DURABILITY)  # pyright: ignore[reportUnknownMemberType]

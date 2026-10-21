@@ -7,7 +7,7 @@ its own chain in `alembic_version_ai`.
 from alembic import context
 from sqlalchemy import Connection, text
 
-from hco_core.db.models import SCHEMA, Base
+from hco_core.db.models import SCHEMA, Base, owned_by_alembic
 
 
 def given_connection() -> Connection:
@@ -35,6 +35,7 @@ def run_migrations(connection: Connection) -> None:
         target_metadata=Base.metadata,
         version_table_schema=SCHEMA,
         include_schemas=True,
+        include_name=owned_by_alembic,
     )
     with context.begin_transaction():
         context.run_migrations()

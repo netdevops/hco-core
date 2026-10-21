@@ -28,6 +28,17 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from hco_core.db.types import ULID_LENGTH, PlatformName, new_id
 
 SCHEMA = "hco"
+CHECKPOINT_TABLES = frozenset(
+    {"checkpoints", "checkpoint_blobs", "checkpoint_writes", "checkpoint_migrations"}
+)
+"""The tables of the LangGraph saver in schema `hco`. The Alembic chain does not own them."""
+
+
+def owned_by_alembic(name: str | None, type_: str, parent_names: object) -> bool:
+    """Return False for a checkpoint table, so that a schema compare skips it."""
+    del parent_names
+    return type_ != "table" or name not in CHECKPOINT_TABLES
+
 
 type JSONObject = dict[str, object]
 
