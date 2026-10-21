@@ -49,6 +49,9 @@ DEFAULT_IGNORABLE_RANGES = (
 )
 """The Unicode `Default_Ignorable_Code_Point` ranges. A text shows none of them."""
 
+MAX_ACTOR_LENGTH = 255
+"""The longest actor name. The name columns hold 255 characters."""
+
 type Resume = Callable[[ApprovalRequest, ApprovalDecision], Awaitable[None]]
 """Wake the parked run with the decision that closed its request."""
 
@@ -58,12 +61,13 @@ class ApprovalError(Exception):
 
 
 class InvalidActorError(ApprovalError, ValueError):
-    """A name is empty, has white space at an end, or has an invisible character."""
+    """A name is empty, too long, has white space at an end, or is not visible."""
 
     def __init__(self, name: str) -> None:
         super().__init__(
-            f"the name {name!r} is empty, has white space at an end, "
-            "or has an invisible or control character"
+            f"the name {name!r} is empty, has more than {MAX_ACTOR_LENGTH} "
+            "characters, has white space at an end, or has an invisible or "
+            "control character"
         )
 
 
@@ -286,7 +290,7 @@ class ApprovalService:
 def is_valid_name(name: str) -> bool:
     """Return True if the name is a valid actor name: printable, trimmed, and visible."""
     return (
-        bool(name)
+        0 < len(name) <= MAX_ACTOR_LENGTH
         and name == name.strip()
         and name.isprintable()
         and not any(_is_default_ignorable(character) for character in name)

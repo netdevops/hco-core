@@ -5,6 +5,7 @@ from http import HTTPStatus
 import pytest
 from sqlalchemy import Engine, text
 
+from hco_core.services.approval import MAX_ACTOR_LENGTH, is_valid_name
 from tests.api.conftest import Api
 
 FULLWIDTH_A = chr(0xFF21)
@@ -50,3 +51,30 @@ def test_a_zero_width_space_in_the_name_is_400(api: Api) -> None:
     response = api.call("POST", "/api/v1/devices/sync", actor="ali\u200bce")
 
     assert response.status_code == HTTPStatus.BAD_REQUEST
+
+
+def test_a_name_longer_than_the_column_is_400(api: Api) -> None:
+    """The name fits `audit_event.actor`, or the request is refused."""
+    longest = api.call("POST", "/api/v1/devices/sync", actor="a" * MAX_ACTOR_LENGTH)
+    too_long = api.call(
+        "POST", "/api/v1/devices/sync", actor="a" * (MAX_ACTOR_LENGTH + 1)
+    )
+
+    assert longest.status_code == HTTPStatus.OK
+    assert too_long.status_code == HTTPStatus.BAD_REQUEST
+    assert too_long.json()["type"] == "urn:hco-core:problem:invalid-actor"
+
+
+def test_the_approval_service_has_the_same_length_rule() -> None:
+    """The header and the service refuse the same names."""
+    assert is_valid_name("a" * MAX_ACTOR_LENGTH)
+    assert not is_valid_name("a" * (MAX_ACTOR_LENGTH + 1))
+
+
+def test_the_problem_shows_the_decoded_name_or_a_fixed_text(api: Api) -> None:
+    """The detail never shows the Latin-1 form of the header bytes."""
+    bom = api.call("POST", "/api/v1/devices/sync", actor="﻿alice")
+    not_utf8 = api.call("POST", "/api/v1/devices/sync", actor=b"al\xffice")
+
+    assert "'\\ufeffalice'" in bom.json()["detail"]
+    assert not_utf8.json()["detail"] == "the X-HCO-Actor header is not UTF-8 text"

@@ -17,6 +17,13 @@ from hco_core.services.audit import Actor
 ACTOR_HEADER: Final = "X-HCO-Actor"
 
 
+class ActorNotUtf8Error(InvalidActorError):
+    """The header bytes are not UTF-8. The message shows no part of them."""
+
+    def __init__(self) -> None:
+        ValueError.__init__(self, f"the {ACTOR_HEADER} header is not UTF-8 text")
+
+
 def current_actor(
     x_hco_actor: Annotated[str | None, Header()] = None,
 ) -> Actor:
@@ -36,15 +43,20 @@ def current_actor(
         )
         raise MissingActorError(message)
     name = _utf8_name(x_hco_actor)
-    if name is None or not is_valid_name(name):
-        raise InvalidActorError(x_hco_actor)
+    if not is_valid_name(name):
+        raise InvalidActorError(name)
     request_id = structlog.contextvars.get_contextvars().get("request_id")
     return Actor(name, "user", "api", None if request_id is None else str(request_id))
 
 
-def _utf8_name(header: str) -> str | None:
-    """Return the NFKC name in the header, which Starlette decodes as Latin-1."""
+def _utf8_name(header: str) -> str:
+    """Return the NFKC name in the header, which Starlette decodes as Latin-1.
+
+    Raises:
+        ActorNotUtf8Error: If the header bytes are not UTF-8.
+
+    """
     try:
         return unicodedata.normalize("NFKC", header.encode("latin-1").decode("utf-8"))
-    except UnicodeError:
-        return None
+    except UnicodeError as error:
+        raise ActorNotUtf8Error from error
