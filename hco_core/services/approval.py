@@ -259,6 +259,29 @@ class ApprovalService:
             await self._resume(request, recorded)
         return request
 
+    async def get_request(
+        self, request_id: str
+    ) -> tuple[ApprovalRequest, tuple[ApprovalDecision, ...]]:
+        """Return the request and its decisions, the oldest first.
+
+        Raises:
+            ApprovalRequestNotFoundError: If no request has the id.
+
+        """
+        async with self._sessions() as session:
+            row = await session.get(models.ApprovalRequest, request_id)
+            if row is None:
+                message = f"no approval request has the id {request_id!r}"
+                raise ApprovalRequestNotFoundError(message)
+            decisions = await session.scalars(
+                select(models.ApprovalDecision)
+                .where(models.ApprovalDecision.request_id == request_id)
+                .order_by(
+                    models.ApprovalDecision.created_at, models.ApprovalDecision.id
+                )
+            )
+            return _to_request(row), tuple(_to_decision(item) for item in decisions)
+
 
 def _is_valid_name(name: str) -> bool:
     return (

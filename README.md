@@ -549,11 +549,19 @@ service, the notification ledger, and the channel names:
 6. `request_approval` opens the approval request and parks the run at its one
    `interrupt()`. Resume it with `Command(resume={"decision", "actor",
    "comment"})`.
-7. `record_decision` sets `APPROVED` or `REJECTED`. A payload that is not
-   valid ends the run in `BLOCKED`. `notify_decided` sends one more message.
+7. `record_decision` reads the approval request from the database. The run is
+   `APPROVED` or `REJECTED` only when the request is closed that way and the
+   resume payload names the same decision. In every other case the run ends
+   in `BLOCKED` with the reason. `notify_decided` sends one more message, with
+   the decisions of the request.
+
+A run that left the review before a node writes, for example an expired run,
+keeps its state, and no message goes out for it.
 
 An assessment layer adds its nodes with the `assessment` hook. The hook returns
-the names of its first and last node.
+the names of its first and last node. A hook node must catch its own errors
+and write each one into `errors` under its own node name. A later node cannot
+lower `risk_tier_floor` or `risk_tier_final`.
 
 ## Requirements
 

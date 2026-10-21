@@ -24,9 +24,9 @@ from langgraph.graph.state import (  # pyright: ignore[reportMissingTypeStubs]
     CompiledStateGraph,
 )
 from langgraph.types import Durability, interrupt
-from pydantic import JsonValue, ValidationError
+from pydantic import Field, JsonValue, ValidationError
 
-from hco_core.domain.approval import Decision, RunState
+from hco_core.domain.approval import ApprovalState, Decision, RunState
 from hco_core.domain.base import BaseModel
 from hco_core.domain.device import DeviceRecord
 from hco_core.domain.ids import DeviceID
@@ -82,6 +82,19 @@ def merge_dicts(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
     return {**left, **right}
 
 
+def higher_tier(left: str, right: str) -> str:
+    """Return the higher of two risk tier names, so that no node lowers a tier.
+
+    An empty text counts as no tier. A name that is not a tier wins, so that
+    `evaluate_policy` blocks on it.
+    """
+    if not left or right not in RiskTier.__members__:
+        return right
+    if left not in RiskTier.__members__:
+        return left
+    return max(RiskTier[left], RiskTier[right]).name
+
+
 class ApprovalPolicy(TypedDict):
     """What the approval request of the run needs."""
 
@@ -119,11 +132,15 @@ class ReviewState(TypedDict, total=False):
     future_report: dict[str, JsonValue]
     change_fingerprint: str
     evidence: Annotated[dict[str, Any], merge_dicts]
-    risk_tier_floor: str
+    risk_tier_floor: Annotated[str, higher_tier]
     risk: dict[str, JsonValue]
-    risk_tier_final: str
+    risk_tier_final: Annotated[str, higher_tier]
     policy: ApprovalPolicy
     approval: dict[str, JsonValue]
+    approval_request_id: str
+    decided_by: list[str]
+    """Each decision of the closed request, as `actor (decision)`."""
+    decision_recorded: bool
     errors: Annotated[dict[str, str], merge_dicts]
     unknowns: Annotated[list[str], operator.add]
 
@@ -148,7 +165,12 @@ class ReviewDeps:
 
 
 type AssessmentHook = Callable[[StateGraph[ReviewState]], tuple[str, str]]
-"""Add assessment nodes to the graph and return the entry and the exit node names."""
+"""Add assessment nodes to the graph and return the entry and the exit node names.
+
+A hook node must catch its own errors and write each one into `errors` under
+its own node name; `evaluate_policy` then ends the run in `BLOCKED`. An error
+that a hook node raises leaves the graph, and the run stays in its state.
+"""
 
 
 class MissingStateError(LookupError):
@@ -408,8 +430,14 @@ class ApprovalDeps(ReviewDeps):
 
 class _Resume(BaseModel):
     decision: Decision
-    actor: str
+    actor: Annotated[str, Field(min_length=1)]
     comment: str = ""
+
+
+_OUTCOMES: Final = {
+    ApprovalState.APPROVED: (Decision.APPROVE, RunState.APPROVED),
+    ApprovalState.REJECTED: (Decision.REJECT, RunState.REJECTED),
+}
 
 
 def route_on_errors(state: ReviewState) -> Literal["blocked", "pass"]:
@@ -424,6 +452,8 @@ async def evaluate_policy(state: ReviewState, deps: ApprovalDeps) -> ReviewState
     final tier is never below the floor.
     """
     run_id = _need(state.get("run_id"), "run_id")
+    if _errors(state):
+        return {}
     unknowns: list[str] = []
     try:
         floor = _tier(state.get("risk_tier_floor"))
@@ -437,7 +467,7 @@ async def evaluate_policy(state: ReviewState, deps: ApprovalDeps) -> ReviewState
         unknowns.append(NO_ASSESSMENT)
     final = max(assessed, floor or RiskTier.LOW)
     expires_at = datetime.now(UTC) + deps.approval_ttl
-    await deps.runs.update_run(
+    written = await deps.runs.update_run(
         run_id,
         RunUpdate(
             state=RunState.EVALUATING_POLICY,
@@ -447,6 +477,8 @@ async def evaluate_policy(state: ReviewState, deps: ApprovalDeps) -> ReviewState
         deps.actor,
         only_from=_POLICY_FROM,
     )
+    if not written:
+        return await _left(run_id, deps, "evaluate_policy")
     return {
         "risk_tier_final": final.name,
         "policy": {
@@ -460,7 +492,15 @@ async def evaluate_policy(state: ReviewState, deps: ApprovalDeps) -> ReviewState
 
 
 def _tier(name: str | None) -> RiskTier | None:
-    return None if name is None else RiskTier[name]
+    return RiskTier[name] if name else None
+
+
+async def _left(run_id: str, deps: ReviewDeps, node: str) -> ReviewState:
+    current = (await deps.runs.get_run(run_id)).state
+    return {
+        "run_state": current.value,
+        "errors": {node: f"{node}: the run left the review; it is {current}"},
+    }
 
 
 async def notify_pending(state: ReviewState, deps: ApprovalDeps) -> ReviewState:
@@ -512,7 +552,11 @@ async def request_approval(state: ReviewState, deps: ApprovalDeps) -> ReviewStat
             "summary": _summary(state, tier),
         }
     )
-    return {"approval": decision, "run_state": RunState.AWAITING_APPROVAL.value}
+    return {
+        "approval": decision,
+        "approval_request_id": request.id,
+        "run_state": RunState.AWAITING_APPROVAL.value,
+    }
 
 
 def _summary(state: ReviewState, tier: str) -> str:
@@ -523,46 +567,78 @@ def _summary(state: ReviewState, tier: str) -> str:
 
 
 async def record_decision(state: ReviewState, deps: ApprovalDeps) -> ReviewState:
-    """Set `APPROVED` or `REJECTED` from the resume payload.
+    """Set the run state from the closed approval request.
 
-    A payload that is not a valid decision never approves. The run ends in
-    `BLOCKED` with the error recorded. A run that left `AWAITING_APPROVAL`
-    stays unchanged.
+    The request in the database decides, never the resume payload. The run is
+    `APPROVED` or `REJECTED` only when the request is closed that way and the
+    payload names the same decision. In every other case the run ends in
+    `BLOCKED` with the reason. A run that left `AWAITING_APPROVAL` keeps its
+    state, and no message goes out.
     """
     run_id = _need(state.get("run_id"), "run_id")
-    try:
-        resume = _Resume.model_validate(state.get("approval"))
-    except ValidationError as error:
-        reason = f"record_decision: the resume payload is not valid: {error}"
-        await deps.runs.update_run(
-            run_id,
-            RunUpdate(state=RunState.BLOCKED, error={"errors": [reason]}),
-            deps.actor,
-            only_from={RunState.AWAITING_APPROVAL},
-        )
-        return {
-            "errors": {"record_decision": reason},
-            "run_state": RunState.BLOCKED.value,
-        }
-    final = (
-        RunState.APPROVED if resume.decision is Decision.APPROVE else RunState.REJECTED
-    )
-    await deps.runs.update_run(
+    request_id = _need(state.get("approval_request_id"), "approval_request_id")
+    request, decisions = await deps.approvals.get_request(request_id)
+    final, reason = _outcome(request.state, state.get("approval"))
+    written = await deps.runs.update_run(
         run_id,
-        RunUpdate(state=final),
+        RunUpdate(state=final, error={"errors": [reason]} if reason else None),
         deps.actor,
         only_from={RunState.AWAITING_APPROVAL},
     )
-    return {"approval": resume.model_dump(mode="json"), "run_state": final.value}
+    if not written:
+        return {
+            **await _left(run_id, deps, "record_decision"),
+            "decision_recorded": False,
+        }
+    decided_by = [f"{row.actor} ({row.decision})" for row in decisions]
+    return {
+        "run_state": final.value,
+        "decided_by": decided_by if final is not RunState.BLOCKED else [],
+        "decision_recorded": True,
+        "errors": {"record_decision": reason},
+    }
+
+
+def _outcome(request_state: ApprovalState, payload: object) -> tuple[RunState, str]:
+    try:
+        resume = _Resume.model_validate(payload)
+    except ValidationError as error:
+        return (
+            RunState.BLOCKED,
+            f"record_decision: the resume payload is not valid: {error}",
+        )
+    decision, final = _OUTCOMES.get(request_state, (None, RunState.BLOCKED))
+    if decision is None:
+        return (
+            RunState.BLOCKED,
+            f"record_decision: the approval request is {request_state}",
+        )
+    if resume.decision is not decision:
+        return (
+            RunState.BLOCKED,
+            (
+                f"record_decision: the approval request is {request_state}, "
+                f"but the resume says {resume.decision}"
+            ),
+        )
+    return final, ""
+
+
+def route_after_decision(state: ReviewState) -> Literal["notify", "end"]:
+    """Announce a recorded decision, and end a run that left the review."""
+    return "notify" if state.get("decision_recorded") else "end"
 
 
 async def notify_decided(state: ReviewState, deps: ApprovalDeps) -> ReviewState:
-    """Tell each channel how the run ended, one time."""
+    """Tell each channel how the run ended, one time.
+
+    The message names the decisions of the closed request, never the payload.
+    """
     run_id = _need(state.get("run_id"), "run_id")
     outcome = _need(state.get("run_state"), "run_state")
     tier = _need(state.get("risk_tier_final"), "risk_tier_final")
-    actor = state.get("approval", {}).get("actor")
-    by = f" Decided by {actor}." if isinstance(actor, str) else ""
+    decided_by = state.get("decided_by", [])
+    by = f" Decisions: {', '.join(decided_by)}." if decided_by else ""
     message = Notification(
         title=f"Run {run_id} is {outcome}",
         body=(
@@ -658,7 +734,11 @@ def build_review_graph(
     )
     graph.add_edge("notify_pending", "request_approval")
     graph.add_edge("request_approval", "record_decision")
-    graph.add_edge("record_decision", "notify_decided")
+    graph.add_conditional_edges(
+        "record_decision",
+        route_after_decision,
+        {"notify": "notify_decided", "end": END},
+    )
     graph.add_edge("notify_decided", END)
     return graph
 

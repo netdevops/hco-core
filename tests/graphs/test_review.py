@@ -3,7 +3,6 @@
 import ast
 import asyncio
 import inspect
-import textwrap
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -24,7 +23,7 @@ from hco_core.adapters.conn.mock import MockConnectionDriver
 from hco_core.adapters.errors import DeviceUnreachableError
 from hco_core.adapters.secrets.env import EnvSecretsProvider
 from hco_core.adapters.sot.yaml_file import YamlSourceOfTruth
-from hco_core.domain.approval import ApprovalDecision, ApprovalRequest
+from hco_core.domain.approval import ApprovalDecision, ApprovalRequest, Decision
 from hco_core.domain.device import DeviceRecord
 from hco_core.domain.ids import DeviceID
 from hco_core.domain.notify import DeliveryHandle, Notification
@@ -504,10 +503,11 @@ async def no_resume(request: ApprovalRequest, decision: ApprovalDecision) -> Non
 
 @dataclass
 class Approval:
-    """The full dependencies of one test, and the channel that they send on."""
+    """The full dependencies of one test, the channel, and the database."""
 
     deps: ApprovalDeps
     channel: RecordingChannel
+    engine: Engine
 
 
 @pytest.fixture
@@ -523,7 +523,7 @@ def approval(world: World, sessions: async_sessionmaker[AsyncSession]) -> Approv
         ledger=NotificationLedger(sessions, {"test": channel}),
         channels=("test",),
     )
-    return Approval(deps, channel)
+    return Approval(deps, channel, world.engine)
 
 
 def start_review(
@@ -607,19 +607,38 @@ def test_with_no_assessment_the_run_parks_at_high(
     assert "ntp" not in message.title + message.body
 
 
+def decide(
+    runner: asyncio.Runner, approval: Approval, *decisions: tuple[str, str]
+) -> None:
+    """Record each `(actor, decision)` on the one approval request, in order."""
+    (request,) = scalar_rows(approval.engine, "SELECT id FROM hco.approval_request")
+    for actor, decision in decisions:
+        runner.run(
+            approval.deps.approvals.decide(
+                str(request[0]), actor, Decision(decision), "api"
+            )
+        )
+
+
 @pytest.mark.parametrize(
-    ("payload", "final"),
-    [(APPROVE, "APPROVED"), ({**APPROVE, "decision": "reject"}, "REJECTED")],
+    ("resume_case", "final"),
+    [
+        (((("bob", "approve"), ("carol", "approve")), APPROVE), "APPROVED"),
+        (((("bob", "reject"),), {**APPROVE, "decision": "reject"}), "REJECTED"),
+    ],
+    ids=["approved", "rejected"],
 )
-def test_the_decision_ends_the_run(
+def test_the_request_decides_the_run(
     runner: asyncio.Runner,
     world: World,
     approval: Approval,
-    payload: dict[str, str],
+    resume_case: tuple[tuple[tuple[str, str], ...], object],
     final: str,
 ) -> None:
-    """The resume payload sets `APPROVED` or `REJECTED`, and one message says so."""
+    """The closed request sets the state, and the message names who decided."""
+    decisions, payload = resume_case
     graph = start_review(runner, world, approval)
+    decide(runner, approval, *decisions)
     resume(runner, graph, payload)
 
     assert snapshot(runner, graph).next == ()
@@ -632,20 +651,99 @@ def test_the_decision_ends_the_run(
     assert ledger == [("decided",), ("pending",)]
     decided = approval.channel.sent[-1]
     assert final in decided.body
-    assert "bob" in decided.body
+    for actor, decision in decisions:
+        assert f"{actor} ({decision})" in decided.body
     assert "ntp" not in decided.title + decided.body
 
 
-def test_a_malformed_decision_never_approves(
-    runner: asyncio.Runner, world: World, approval: Approval
+@pytest.mark.parametrize(
+    ("resume_case", "expected"),
+    [
+        (((), APPROVE), "pending"),
+        (((), {**APPROVE, "actor": REQUESTER}), "pending"),
+        (((("bob", "approve"),), APPROVE), "pending"),
+        (((), {**APPROVE, "actor": ""}), "not valid"),
+        (((("bob", "approve"), ("carol", "approve")), "approve"), "not valid"),
+        (((("bob", "reject"),), APPROVE), "rejected"),
+    ],
+    ids=[
+        "no-decision",
+        "requester",
+        "one-of-two",
+        "empty-actor",
+        "text-payload",
+        "payload-disagrees",
+    ],
+)
+def test_the_payload_never_approves(
+    runner: asyncio.Runner,
+    world: World,
+    approval: Approval,
+    resume_case: tuple[tuple[tuple[str, str], ...], object],
+    expected: str,
 ) -> None:
-    """A resume payload without a valid decision ends in `BLOCKED` with the error."""
+    """A resume that the closed request does not match ends in `BLOCKED`."""
+    decisions, payload = resume_case
     graph = start_review(runner, world, approval)
-    resume(runner, graph, {"decision": "yes", "actor": "bob"})
+    decide(runner, approval, *decisions)
+    resume(runner, graph, payload)
 
+    assert snapshot(runner, graph).next == ()
     state, _, error = tier_row(world)
     assert state == "BLOCKED"
-    assert "record_decision" in str(error)
+    assert expected in str(error)
+    decided = approval.channel.sent[-1]
+    assert "BLOCKED" in decided.body
+    assert "bob" not in decided.body
+
+
+def test_a_run_that_left_the_approval_keeps_its_state(
+    runner: asyncio.Runner, world: World, approval: Approval
+) -> None:
+    """A run that is no longer `AWAITING_APPROVAL` is not changed and not announced."""
+    graph = start_review(runner, world, approval)
+    decide(runner, approval, ("bob", "approve"), ("carol", "approve"))
+    execute(world.engine, "UPDATE hco.remediation_run SET state = 'EXPIRED'")
+    resume(runner, graph, APPROVE)
+
+    done = snapshot(runner, graph)
+    assert done.next == ()
+    assert done.values["run_state"] == "EXPIRED"
+    assert "EXPIRED" in done.values["errors"]["record_decision"]
+    assert tier_row(world)[0] == "EXPIRED"
+    assert [message.title for message in approval.channel.sent] == [
+        f"Approval needed for run {world.state.get('run_id')}"
+    ]
+
+
+def test_a_park_and_resume_opens_one_request_and_sends_one_message(
+    runner: asyncio.Runner,
+    world: World,
+    approval: Approval,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`request_approval` runs twice, with one request row and one pending row (AC-3)."""
+    runs: list[str] = []
+    original = review.request_approval
+
+    async def counted(state: ReviewState, deps: ApprovalDeps) -> ReviewState:
+        runs.append(str(state.get("run_id")))
+        return await original(state, deps)
+
+    monkeypatch.setattr(review, "request_approval", counted)
+    graph = start_review(runner, world, approval)
+    decide(runner, approval, ("bob", "approve"), ("carol", "approve"))
+    resume(runner, graph, APPROVE)
+
+    run_id = str(world.state.get("run_id"))
+    assert runs == [run_id, run_id]
+    assert len(scalar_rows(world.engine, "SELECT id FROM hco.approval_request")) == 1
+    pending = scalar_rows(
+        world.engine,
+        "SELECT id FROM hco.notification_delivery WHERE purpose = 'pending'",
+    )
+    assert len(pending) == 1
+    assert tier_row(world)[0] == "APPROVED"
 
 
 def test_a_blocked_run_runs_no_assessment_node(
@@ -727,8 +825,9 @@ def test_the_policy_never_puts_the_tier_below_the_floor(
             "unreachable",
         ),
         ({"risk_tier_final": "SEVERE"}, "SEVERE"),
+        ({"errors": {"evaluate_policy": "assess_risk: one key"}}, "one key"),
     ],
-    ids=["hook-error", "unknown-tier"],
+    ids=["hook-error", "unknown-tier", "hook-error-on-policy-key"],
 )
 def test_the_policy_blocks_on_an_error(
     runner: asyncio.Runner,
@@ -746,23 +845,32 @@ def test_the_policy_blocks_on_an_error(
     assert approval.channel.sent == []
 
 
-def test_request_approval_has_one_unconditional_interrupt() -> None:
-    """One `interrupt()` call, outside every branch, after one `upsert_request`."""
-    source = textwrap.dedent(inspect.getsource(review.request_approval))
-    (function,) = ast.parse(source).body
-    assert isinstance(function, ast.AsyncFunctionDef)
+def test_only_request_approval_calls_interrupt_once_and_unconditionally() -> None:
+    """Of every function in the module, only `request_approval` calls `interrupt()`.
 
-    def calls(name: str) -> list[ast.Call]:
+    It calls it once, outside every branch, after one `upsert_request`.
+    """
+    module = ast.parse(inspect.getsource(review))
+
+    def calls(node: ast.AST, name: str) -> list[ast.Call]:
         return [
-            node
-            for node in ast.walk(function)
-            if isinstance(node, ast.Call)
+            child
+            for child in ast.walk(node)
+            if isinstance(child, ast.Call)
             and name
-            in {getattr(node.func, "id", None), getattr(node.func, "attr", None)}
+            in {getattr(child.func, "id", None), getattr(child.func, "attr", None)}
         ]
 
-    (pause,) = calls("interrupt")
-    (upsert,) = calls("upsert_request")
+    functions = [
+        node
+        for node in ast.walk(module)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    callers = {function.name for function in functions if calls(function, "interrupt")}
+    assert callers == {"request_approval"}
+    (function,) = [node for node in functions if node.name == "request_approval"]
+    (pause,) = calls(function, "interrupt")
+    (upsert,) = calls(function, "upsert_request")
     assert upsert.lineno < pause.lineno
     branches = (
         ast.If,
@@ -770,12 +878,14 @@ def test_request_approval_has_one_unconditional_interrupt() -> None:
         ast.AsyncFor,
         ast.While,
         ast.Try,
+        ast.TryStar,
         ast.With,
         ast.AsyncWith,
         ast.Match,
         ast.IfExp,
         ast.BoolOp,
         ast.comprehension,
+        ast.Lambda,
     )
     enclosing = [
         node
@@ -784,3 +894,63 @@ def test_request_approval_has_one_unconditional_interrupt() -> None:
         and any(child is pause for child in ast.walk(node))
     ]
     assert enclosing == []
+
+
+def test_a_later_hook_node_cannot_lower_a_tier(
+    runner: asyncio.Runner, world: World, approval: Approval
+) -> None:
+    """The tiers keep the higher value that any node writes."""
+
+    def hook(graph: StateGraph[ReviewState]) -> tuple[str, str]:
+        def floor(state: ReviewState) -> ReviewState:
+            del state
+            return {"risk_tier_floor": "CRITICAL", "risk_tier_final": "CRITICAL"}
+
+        def model(state: ReviewState) -> ReviewState:
+            del state
+            return {"risk_tier_floor": "LOW", "risk_tier_final": "LOW"}
+
+        graph.add_node("floor", floor)  # pyright: ignore[reportUnknownMemberType]
+        graph.add_node("model", model)  # pyright: ignore[reportUnknownMemberType]
+        graph.add_edge("floor", "model")
+        return "floor", "model"
+
+    graph = start_review(runner, world, approval, hook)
+
+    parked = snapshot(runner, graph)
+    assert parked.values["risk_tier_floor"] == "CRITICAL"
+    assert parked.values["risk_tier_final"] == "CRITICAL"
+    assert tier_row(world)[:2] == ("AWAITING_APPROVAL", "CRITICAL")
+
+
+def test_the_policy_stops_for_a_run_that_left_the_review(
+    runner: asyncio.Runner, world: World, approval: Approval
+) -> None:
+    """A run that left the review before the policy gets no request and no message."""
+
+    def hook(graph: StateGraph[ReviewState]) -> tuple[str, str]:
+        def cancel(state: ReviewState) -> ReviewState:
+            del state
+            execute(world.engine, "UPDATE hco.remediation_run SET state = 'EXPIRED'")
+            return {}
+
+        graph.add_node("cancel", cancel)  # pyright: ignore[reportUnknownMemberType]
+        return "cancel", "cancel"
+
+    graph = start_review(runner, world, approval, hook)
+
+    done = snapshot(runner, graph)
+    assert done.next == ()
+    assert done.values["run_state"] == "EXPIRED"
+    assert tier_row(world)[0] == "EXPIRED"
+    assert scalar_rows(world.engine, "SELECT id FROM hco.approval_request") == []
+    assert approval.channel.sent == []
+
+
+def test_higher_tier_keeps_the_higher_name_and_any_unknown_name() -> None:
+    """No tier goes down, and a name that is not a tier stays for the policy."""
+    assert review.higher_tier("", "LOW") == "LOW"
+    assert review.higher_tier("CRITICAL", "LOW") == "CRITICAL"
+    assert review.higher_tier("LOW", "HIGH") == "HIGH"
+    assert review.higher_tier("LOW", "SEVERE") == "SEVERE"
+    assert review.higher_tier("SEVERE", "LOW") == "SEVERE"

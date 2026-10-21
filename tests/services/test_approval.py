@@ -509,3 +509,21 @@ def test_each_decision_writes_one_audit_event(
             {"state": "approved", "decision": "approve", "approvals": 1},
         )
     ]
+
+
+def test_get_request_returns_the_request_and_its_decisions(
+    runner: asyncio.Runner, service: ApprovalService, change_set_id: str
+) -> None:
+    """The decisions come back the oldest first, and an unknown id raises."""
+    request = open_request(runner, service, change_set_id, RiskTier.HIGH)
+    runner.run(service.decide(request.id, "bob", Decision.APPROVE, "api"))
+    runner.run(service.decide(request.id, "carol", Decision.REJECT, "api"))
+
+    found, decisions = runner.run(service.get_request(request.id))
+    assert (found.id, found.state) == (request.id, ApprovalState.REJECTED)
+    assert [(item.actor, item.decision) for item in decisions] == [
+        ("bob", Decision.APPROVE),
+        ("carol", Decision.REJECT),
+    ]
+    with pytest.raises(ApprovalRequestNotFoundError):
+        runner.run(service.get_request("missing"))
