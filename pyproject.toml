@@ -31,6 +31,7 @@ pydantic-settings = "^2.5"
 structlog = ">=24.4"
 python-ulid = ">=3.0"
 langgraph = "^1.2"
+langgraph-checkpoint-postgres = "^3.2"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "*"
