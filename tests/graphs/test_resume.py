@@ -1,16 +1,19 @@
 """A run parked in Postgres resumes in a new graph with a new saver (AC-2, AC-3)."""
 
 import asyncio
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+from langgraph.graph.state import (  # pyright: ignore[reportMissingTypeStubs]
+    CompiledStateGraph,
+)
 from langgraph.types import Command
 from pydantic import SecretStr
-from sqlalchemy import Engine, inspect
+from sqlalchemy import Engine, inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from hco_core.adapters.conn.mock import MockConnectionDriver
@@ -35,7 +38,7 @@ from hco_core.graphs.review import (
 from hco_core.services.approval import ApprovalService, Resume
 from hco_core.services.audit import Actor
 from hco_core.services.ledger import NotificationLedger
-from hco_core.services.resume import RunResumer
+from hco_core.services.resume import NotParkedError, RunResumer
 from hco_core.services.runs import RunRepository
 from hco_core.settings import CoreSettings
 from tests.conftest import REQUESTER
@@ -109,7 +112,9 @@ def parked(
         "change_set_id": change_set_id,
         "requested_by": REQUESTER,
     }
-    return Parked(sessions, CoreSettings(), engine, state, thread_id, tmp_path)
+    settings = CoreSettings()
+    runner.run(setup_checkpointer(settings))
+    return Parked(sessions, settings, engine, state, thread_id, tmp_path)
 
 
 @asynccontextmanager
@@ -198,27 +203,146 @@ def test_park_and_resume_run_request_approval_twice_with_one_request_and_message
     assert run_state(parked) == "APPROVED"
 
 
-def test_the_resumer_continues_the_run_after_the_request_closes(
-    runner: asyncio.Runner, parked: Parked
-) -> None:
-    """The service closes the request, then `RunResumer` resumes the thread of the run."""
-    run_id = str(parked.state.get("run_id"))
-    resumer = RunResumer(
+def resumer(parked: Parked, settings: CoreSettings | None = None) -> RunResumer:
+    """Return a resumer on new dependencies."""
+    return RunResumer(
         RunRepository(parked.sessions),
         build_review_graph(parked.deps()),
-        parked.settings,
+        settings or parked.settings,
     )
-    seen: list[str] = []
+
+
+def park_and_approve(
+    runner: asyncio.Runner, parked: Parked, run_resumer: RunResumer
+) -> list[ApprovalDecision]:
+    """Park the run, then close its request with a resume from the service."""
+    run_id = str(parked.state.get("run_id"))
+    closing: list[ApprovalDecision] = []
 
     async def wake(request: ApprovalRequest, decision: ApprovalDecision) -> None:
-        seen.append(request.state)
-        await resumer.resume(run_id, decision)
+        assert request.state == "approved"
+        closing.append(decision)
+        await run_resumer.resume(run_id, decision)
 
     runner.run(park(parked))
     runner.run(approve(parked, wake))
+    return closing
 
-    assert seen == ["approved"]
+
+def test_the_resumer_continues_the_run_after_the_request_closes(
+    runner: asyncio.Runner, parked: Parked, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The service closes the request, then `RunResumer` resumes with sync durability."""
+    durability: list[object] = []
+    original = CompiledStateGraph.ainvoke  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+
+    async def recording(self: Graph, *args: object, **kwargs: object) -> object:
+        durability.append(kwargs.get("durability"))
+        return await original(self, *args, **kwargs)  # pyright: ignore[reportUnknownVariableType, reportCallIssue, reportArgumentType]
+
+    monkeypatch.setattr(CompiledStateGraph, "ainvoke", recording)
+    (closing,) = park_and_approve(runner, parked, resumer(parked))
+
+    assert closing.actor == "carol"
+    assert durability == ["sync", "sync"]
     assert runner.run(next_nodes(parked)) == ()
+    assert run_state(parked) == "APPROVED"
+
+
+def test_a_second_resume_of_a_finished_thread_is_refused(
+    runner: asyncio.Runner, parked: Parked
+) -> None:
+    """A thread with no pending interrupt gets `NotParkedError`, and nothing is written."""
+    run_resumer = resumer(parked)
+    (closing,) = park_and_approve(runner, parked, run_resumer)
+    run_id = str(parked.state.get("run_id"))
+
+    with pytest.raises(NotParkedError, match=run_id):
+        runner.run(run_resumer.resume(run_id, closing))
+
+    assert run_state(parked) == "APPROVED"
+
+
+def test_a_resume_before_the_run_starts_is_refused(
+    runner: asyncio.Runner, parked: Parked
+) -> None:
+    """A run with no checkpoint gets `NotParkedError`, and the graph does not start."""
+    decision = ApprovalDecision(
+        id=new_id(),
+        request_id=new_id(),
+        actor="bob",
+        actor_kind="user",
+        decision=Decision.APPROVE,
+        surface="api",
+        comment="",
+    )
+
+    with pytest.raises(NotParkedError):
+        runner.run(resumer(parked).resume(str(parked.state.get("run_id")), decision))
+
+    assert run_state(parked) == "DRAFT"
+    assert runner.run(next_nodes(parked)) == ()
+
+
+async def open_four(settings: CoreSettings) -> list[object]:
+    """Open four savers at one time and read one checkpoint with each."""
+
+    async def read() -> object:
+        async with open_checkpointer(settings) as saver:
+            return await saver.aget_tuple({"configurable": {"thread_id": "none"}})
+
+    return list(await asyncio.gather(read(), read(), read(), read()))
+
+
+def test_concurrent_opens_after_the_setup_pass(
+    runner: asyncio.Runner, parked: Parked
+) -> None:
+    """`open_checkpointer` makes no table, so concurrent opens do not race."""
+    assert runner.run(open_four(parked.settings)) == [None, None, None, None]
+
+
+APP_ROLE = "hco_core_app_test"
+
+
+@pytest.fixture
+def app_settings(engine: Engine, parked: Parked) -> Iterator[CoreSettings]:
+    """Give settings for a role with DML grants on schema `hco` and no `CREATE`.
+
+    Yields:
+        The settings of the role. The role is dropped after the test.
+
+    """
+    del parked
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = "
+                f"'{APP_ROLE}') THEN CREATE ROLE {APP_ROLE} LOGIN PASSWORD "
+                f"'{APP_ROLE}'; END IF; END $$"
+            )
+        )
+        connection.execute(text(f"GRANT USAGE ON SCHEMA hco TO {APP_ROLE}"))
+        connection.execute(
+            text(
+                "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA hco "
+                f"TO {APP_ROLE}"
+            )
+        )
+    url = engine.url.set(username=APP_ROLE, password=APP_ROLE)
+    yield CoreSettings(
+        database_url=SecretStr(url.render_as_string(hide_password=False))
+    )
+    with engine.begin() as connection:
+        connection.execute(text(f"DROP OWNED BY {APP_ROLE}"))
+        connection.execute(text(f"DROP ROLE {APP_ROLE}"))
+
+
+def test_a_role_with_no_create_grant_resumes_the_run(
+    runner: asyncio.Runner, parked: Parked, app_settings: CoreSettings
+) -> None:
+    """The runtime role needs DML grants only, after `setup_checkpointer` ran."""
+    park_and_approve(runner, parked, resumer(parked, app_settings))
+
     assert run_state(parked) == "APPROVED"
 
 
@@ -245,3 +369,30 @@ def test_the_conninfo_is_plain_libpq_with_the_hco_search_path() -> None:
     assert "host=db" in conninfo
     assert "sslmode=require" in conninfo
     assert "options='-c search_path=hco'" in conninfo
+
+
+def test_the_conninfo_keeps_the_options_of_the_url() -> None:
+    """The search path is added to the options, so a statement timeout stays."""
+    settings = CoreSettings(
+        database_url=SecretStr(
+            "postgresql://u:p@db/app?options=-c%20statement_timeout%3D5000"
+        )
+    )
+
+    conninfo = checkpointer_conninfo(settings)
+
+    assert "options='-c statement_timeout=5000 -c search_path=hco'" in conninfo
+
+
+def test_a_malformed_url_error_does_not_show_the_password() -> None:
+    """The error names the setting, never the URL or the password."""
+    settings = CoreSettings(
+        database_url=SecretStr("postgresql://hco:S3CRET pw@@127.0.0.1:55432/hco?x=1")
+    )
+
+    with pytest.raises(ValueError, match="HCO_DATABASE_URL") as raised:
+        checkpointer_conninfo(settings)
+
+    assert "S3CRET" not in str(raised.value)
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None

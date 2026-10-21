@@ -673,12 +673,18 @@ only in tests.
 - The saver keeps its four tables (`hco_core.db.models.CHECKPOINT_TABLES`) in
   schema `hco`. The Alembic chain does not own them.
 - Run `upgrade(settings)` first, because it makes schema `hco`. Then run
-  `setup_checkpointer(settings)` one time. `open_checkpointer` also runs the
-  setup, and the setup is safe to run again.
+  `setup_checkpointer(settings)` one time, as the deploy step. The setup is
+  safe to run again.
+- `open_checkpointer` makes no table. The runtime role needs only `USAGE` on
+  schema `hco` and `SELECT`, `INSERT`, `UPDATE`, and `DELETE` on its tables.
+- The saver connection adds `-c search_path=hco` after the `options` of
+  `HCO_DATABASE_URL`, so a setting such as `statement_timeout` stays. A URL that
+  does not parse gives `InvalidDatabaseUrlError`, which does not show the URL.
 - `RunResumer(runs, graph, settings).resume(run_id, decision)` is the only way a
   parked run continues. It reads the thread of the run, opens a new saver,
   compiles a new graph, and resumes with `Command(resume=...)` and
-  `durability="sync"`.
+  `durability="sync"`. A thread with no pending interrupt gives
+  `NotParkedError`, and nothing is written.
 - Call `resume` only after `ApprovalService.decide()` closes the request, from
   the `resume` callback of the service. The payload never approves:
   `record_decision` reads the closed request from the database.
@@ -714,10 +720,19 @@ poetry run python -m hco_core.lint.interrupts hco_core
 ```
 
 The command prints each violation as `path:line: function: reason` and exits 1.
-It fails on a second `interrupt()` in one function, and on an `interrupt()`
-inside `if`, `for`, `while`, `try`, `with`, `match`, a conditional expression, a
-boolean operator, a comprehension, or a lambda. Calls above the `interrupt()`
-are permitted, so make each one idempotent.
+It fails on these:
+
+- A second `interrupt()` in one function.
+- An `interrupt()` inside `if`, `for`, `while`, `try`, `with`, `match`,
+  `assert`, a conditional expression, a boolean operator, a comprehension, or a
+  lambda.
+- An `interrupt()` outside a function body, for example in a decorator or a
+  default argument.
+- A `return`, `raise`, `break`, or `continue` inside one of these constructs
+  above the `interrupt()`.
+
+Calls above the `interrupt()` are permitted, so make each one idempotent. The
+rule does not follow a local alias such as `ask = interrupt`, or `getattr`.
 
 ## Requirements
 

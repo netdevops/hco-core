@@ -37,9 +37,10 @@ FAILING = {
     "else": """
         def node(state):
             if state["skip"]:
-                return {}
+                answer = {}
             else:
-                return interrupt("a")
+                answer = interrupt("a")
+            return answer
     """,
     "for": """
         def node(state):
@@ -99,6 +100,19 @@ FAILING = {
     "module-level": """
         answer = interrupt("a")
     """,
+    "assert": """
+        def node(state):
+            assert interrupt("a")
+    """,
+    "decorator": """
+        @register(interrupt("a"))
+        def node(state):
+            return state
+    """,
+    "default-argument": """
+        def node(state, answer=interrupt("a")):
+            return answer
+    """,
     "class-body": """
         class Node:
             answer = interrupt("a")
@@ -118,6 +132,44 @@ FAILING = {
             if state["ask"]:
                 return types.interrupt("a")
             return {}
+    """,
+}
+
+
+EARLY_EXITS = {
+    "return": """
+        def node(state):
+            if state["done"]:
+                return {}
+            return interrupt("a")
+    """,
+    "raise": """
+        def node(state):
+            if state["bad"]:
+                raise ValueError
+            return interrupt("a")
+    """,
+    "break": """
+        def node(state):
+            for item in state["items"]:
+                if item:
+                    break
+            return interrupt("a")
+    """,
+    "continue": """
+        def node(state):
+            for item in state["items"]:
+                if item:
+                    continue
+            return interrupt("a")
+    """,
+    "return-in-except": """
+        def node(state):
+            try:
+                state.check()
+            except ValueError:
+                return {}
+            return interrupt("a")
     """,
 }
 
@@ -242,3 +294,36 @@ def test_the_module_command_exits_1_on_a_violation(tmp_path: Path) -> None:
 
     assert done.returncode == 1
     assert done.stdout == f"{path}:4: node: interrupt() inside while\n"
+
+
+@pytest.mark.parametrize(
+    ("kind", "source"), EARLY_EXITS.items(), ids=EARLY_EXITS.keys()
+)
+def test_an_early_exit_in_a_branch_above_the_interrupt_fails(
+    tmp_path: Path, kind: str, source: str
+) -> None:
+    """A guard that leaves the node first makes the `interrupt()` conditional."""
+    path = write(tmp_path, source)
+    keyword = kind.split("-", maxsplit=1)[0]
+
+    (violation,) = check([path])
+
+    line = path.read_text(encoding="utf8").splitlines()[violation.line - 1]
+    assert line.strip().startswith(keyword)
+    assert violation.message.startswith(f"{keyword} inside ")
+    assert violation.message.endswith(" above interrupt()")
+
+
+def test_an_exit_after_the_interrupt_passes(tmp_path: Path) -> None:
+    """A branch below the `interrupt()` does not change whether it runs."""
+    source = """
+        def node(state):
+            answer = interrupt("a")
+            if not answer:
+                return {}
+            for item in answer:
+                if item:
+                    break
+            return {"answer": answer}
+    """
+    assert check([write(tmp_path, source)]) == []
