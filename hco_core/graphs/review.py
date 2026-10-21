@@ -13,7 +13,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import partial
-from typing import TYPE_CHECKING, Annotated, Any, Final, Literal, TypedDict
+from typing import TYPE_CHECKING, Annotated, Any, Final, Literal, TypedDict, cast
 
 from langgraph.graph import (  # pyright: ignore[reportMissingTypeStubs]
     END,
@@ -26,7 +26,13 @@ from langgraph.graph.state import (  # pyright: ignore[reportMissingTypeStubs]
 from langgraph.types import Durability, interrupt
 from pydantic import Field, JsonValue, ValidationError
 
-from hco_core.domain.approval import ApprovalState, Decision, RunState
+from hco_core.domain.approval import (
+    ApprovalDecision,
+    ApprovalRequest,
+    ApprovalState,
+    Decision,
+    RunState,
+)
 from hco_core.domain.base import BaseModel
 from hco_core.domain.device import DeviceRecord
 from hco_core.domain.ids import DeviceID
@@ -164,6 +170,8 @@ class ReviewDeps:
     plugins: PluginFactory = no_plugins
     tag_rules: tuple[Mapping[str, object], ...] = ()
     actor: Actor = GRAPH_ACTOR
+    input_keys: tuple[str, ...] = ("run_id",)
+    """The keys that the graph input must hold. `collect_running` checks them first."""
 
 
 type AssessmentHook = Callable[[StateGraph[ReviewState]], tuple[str, str]]
@@ -204,8 +212,12 @@ async def collect_running(state: ReviewState, deps: ReviewDeps) -> ReviewState:
 
     A run past `COLLECTING` ends with no write. Any error ends the run in
     `BLOCKED`, because the adapters and the device are outside HCO. A missing
-    `run_id` is a wiring error and raises `MissingStateError`.
+    input key of `deps.input_keys` is a wiring error and raises
+    `MissingStateError` before any write.
     """
+    values = cast("Mapping[str, object]", state)
+    for key in deps.input_keys:
+        _need(values.get(key), key)
     run_id = _need(state.get("run_id"), "run_id")
     try:
         collected = await _collect(run_id, deps)
@@ -428,6 +440,7 @@ class ApprovalDeps(ReviewDeps):
     ledger: NotificationLedger
     channels: tuple[str, ...] = ("log",)
     approval_ttl: timedelta = timedelta(hours=72)
+    input_keys: tuple[str, ...] = ("run_id", "change_set_id", "requested_by")
 
 
 class _Resume(BaseModel):
@@ -515,7 +528,7 @@ async def notify_pending(state: ReviewState, deps: ApprovalDeps) -> ReviewState:
         body=(
             f"Run {run_id} on device {_device_name(state)} waits for approval. "
             f"Risk tier: {tier}. "
-            f"Approvals needed: {policy['approvals_required']}."
+            f"Approvals needed: {policy['approvals_required']}.{_default(state, tier)}"
         ),
         severity="warning",
         run_id=run_id,
@@ -561,6 +574,12 @@ async def request_approval(state: ReviewState, deps: ApprovalDeps) -> ReviewStat
     }
 
 
+def _default(state: ReviewState, tier: str) -> str:
+    if NO_ASSESSMENT in state.get("unknowns", []):
+        return f" No risk assessment ran. The tier is {tier} by default."
+    return ""
+
+
 def _summary(state: ReviewState, tier: str) -> str:
     summary = state.get("risk", {}).get("summary")
     if isinstance(summary, str) and summary:
@@ -580,7 +599,7 @@ async def record_decision(state: ReviewState, deps: ApprovalDeps) -> ReviewState
     run_id = _need(state.get("run_id"), "run_id")
     request_id = _need(state.get("approval_request_id"), "approval_request_id")
     request, decisions = await deps.approvals.get_request(request_id)
-    final, reason = _outcome(request.state, state.get("approval"))
+    final, reason = _outcome(request, decisions, state.get("approval"))
     written = await deps.runs.update_run(
         run_id,
         RunUpdate(state=final, error={"errors": [reason]} if reason else None),
@@ -601,15 +620,36 @@ async def record_decision(state: ReviewState, deps: ApprovalDeps) -> ReviewState
     }
 
 
-def _outcome(request_state: ApprovalState, payload: object) -> tuple[RunState, str]:
+def _outcome(
+    request: ApprovalRequest,
+    decisions: tuple[ApprovalDecision, ...],
+    payload: object,
+) -> tuple[RunState, str]:
+    request_state = request.state
+    if not isinstance(payload, Mapping):
+        return RunState.BLOCKED, "record_decision: the resume payload is not a mapping"
     try:
         resume = _Resume.model_validate(payload)
     except ValidationError as error:
+        problems = "; ".join(
+            f"{'.'.join(str(part) for part in item['loc'])}: {item['msg']}"
+            for item in error.errors(include_url=False, include_input=False)
+        )
         return (
             RunState.BLOCKED,
-            f"record_decision: the resume payload is not valid: {error}",
+            f"record_decision: the resume payload is not valid: {problems}",
         )
     decision, final = _OUTCOMES.get(request_state, (None, RunState.BLOCKED))
+    if request_state is ApprovalState.PENDING:
+        approvals = sum(row.decision is Decision.APPROVE for row in decisions)
+        return (
+            RunState.BLOCKED,
+            (
+                f"record_decision: the run was resumed with {approvals} of "
+                f"{request.required_count} approvals; the approval request stays "
+                "pending. Start a new run."
+            ),
+        )
     if decision is None:
         return (
             RunState.BLOCKED,
@@ -641,12 +681,15 @@ async def notify_decided(state: ReviewState, deps: ApprovalDeps) -> ReviewState:
     tier = _need(state.get("risk_tier_final"), "risk_tier_final")
     decided_by = state.get("decided_by", [])
     by = f" Decisions: {', '.join(decided_by)}." if decided_by else ""
+    reason = state.get("errors", {}).get("record_decision", "")
+    why = f" Reason: {reason.removeprefix('record_decision: ')}" if reason else ""
     message = Notification(
         title=f"Run {run_id} is {outcome}",
         body=(
             f"Run {run_id} on device {_device_name(state)} is {outcome}. "
-            f"Risk tier: {tier}.{by}"
+            f"Risk tier: {tier}.{by}{why}"
         ),
+        severity="warning" if outcome == RunState.BLOCKED else "info",
         run_id=run_id,
     )
     for channel in deps.channels:

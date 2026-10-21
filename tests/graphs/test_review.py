@@ -604,6 +604,7 @@ def test_with_no_assessment_the_run_parks_at_high(
     assert message.run_id == world.state.get("run_id")
     assert "edge-1" in message.body
     assert "HIGH" in message.body
+    assert "No risk assessment ran. The tier is HIGH by default." in message.body
     assert "ntp" not in message.title + message.body
 
 
@@ -659,11 +660,11 @@ def test_the_request_decides_the_run(
 @pytest.mark.parametrize(
     ("resume_case", "expected"),
     [
-        (((), APPROVE), "pending"),
-        (((), {**APPROVE, "actor": REQUESTER}), "pending"),
-        (((("bob", "approve"),), APPROVE), "pending"),
-        (((), {**APPROVE, "actor": ""}), "not valid"),
-        (((("bob", "approve"), ("carol", "approve")), "approve"), "not valid"),
+        (((), APPROVE), "resumed with 0 of 2 approvals"),
+        (((), {**APPROVE, "actor": REQUESTER}), "resumed with 0 of 2 approvals"),
+        (((("bob", "approve"),), APPROVE), "resumed with 1 of 2 approvals"),
+        (((), {**APPROVE, "actor": ""}), "not valid: actor: "),
+        (((("bob", "approve"), ("carol", "approve")), "approve"), "not a mapping"),
         (((("bob", "reject"),), APPROVE), "rejected"),
     ],
     ids=[
@@ -692,9 +693,13 @@ def test_the_payload_never_approves(
     state, _, error = tier_row(world)
     assert state == "BLOCKED"
     assert expected in str(error)
+    assert "_Resume" not in str(error)
+    assert "pydantic.dev" not in str(error)
     decided = approval.channel.sent[-1]
     assert "BLOCKED" in decided.body
-    assert "bob" not in decided.body
+    assert expected in decided.body
+    assert decided.severity == "warning"
+    assert "Decisions:" not in decided.body
 
 
 def test_a_run_that_left_the_approval_keeps_its_state(
@@ -956,3 +961,32 @@ def test_higher_tier_keeps_the_higher_name_and_any_unknown_name() -> None:
     assert review.higher_tier("SEVERE", "LOW") == "SEVERE"
     assert review.higher_tier("CRITICAL", "") == "CRITICAL"
     assert review.higher_tier("CRITICAL", None) == "CRITICAL"
+
+
+@pytest.mark.parametrize("missing", ["change_set_id", "requested_by"])
+def test_a_missing_input_key_fails_before_any_write(
+    runner: asyncio.Runner, world: World, approval: Approval, missing: str
+) -> None:
+    """The review graph checks its three input keys at the first node."""
+    state: dict[str, object] = dict(world.state)
+    del state[missing]
+    world.state = cast("ReviewState", state)
+    with pytest.raises(review.MissingStateError, match=missing):
+        start_review(runner, world, approval)
+
+    assert tier_row(world)[0] == "DRAFT"
+    assert snapshot_kinds(world) == []
+    assert approval.channel.sent == []
+
+
+def test_a_cancelled_request_blocks_the_run(
+    runner: asyncio.Runner, world: World, approval: Approval
+) -> None:
+    """A request that closed in another way than a decision never approves."""
+    graph = start_review(runner, world, approval)
+    execute(world.engine, "UPDATE hco.approval_request SET state = 'cancelled'")
+    resume(runner, graph, APPROVE)
+
+    state, _, error = tier_row(world)
+    assert state == "BLOCKED"
+    assert "the approval request is cancelled" in str(error)
