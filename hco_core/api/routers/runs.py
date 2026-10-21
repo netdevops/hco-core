@@ -173,19 +173,19 @@ def runs_router(settings: CoreSettings, deps: ApiDeps) -> APIRouter:
         if future is None or run.remediation_dump is None or run.rollback_dump is None:
             message = f"run {run_id!r} is {run.state}; it has no remediation yet"
             raise RunNotReadyError(message)
+        dumps = (run.remediation_dump, run.rollback_dump, future.dump)
         remediation, rollback, rendered = await asyncio.to_thread(
-            lambda: tuple(
-                render_lines(device.platform_name, dump)
-                for dump in (
-                    run.remediation_dump or {},
-                    run.rollback_dump or {},
-                    future.dump,
-                )
-            )
+            _render, device.platform_name, dumps
         )
         return RunDiff(remediation=remediation, rollback=rollback, future=rendered)
 
     return router
+
+
+def _render(
+    platform_name: str, dumps: tuple[models.JSONObject, ...]
+) -> tuple[tuple[str, ...], ...]:
+    return tuple(render_lines(platform_name, dump) for dump in dumps)
 
 
 async def _start(
