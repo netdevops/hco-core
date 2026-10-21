@@ -10,7 +10,8 @@ from dataclasses import dataclass
 
 import structlog
 from fastapi import FastAPI
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.datastructures import MutableHeaders
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from hco_core import __version__
 from hco_core.api.deps import API_PREFIX, ApiDeps, build_deps
@@ -24,7 +25,10 @@ from hco_core.settings import CoreSettings
 
 @dataclass(frozen=True, slots=True)
 class RequestIdMiddleware:
-    """Bind a new request id to every log line of one HTTP request."""
+    """Bind a new request id to every log line of one HTTP request.
+
+    Each response also gets `X-Content-Type-Options: nosniff`.
+    """
 
     app: ASGIApp
 
@@ -33,8 +37,14 @@ class RequestIdMiddleware:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
+
+        async def send_nosniff(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                MutableHeaders(scope=message)["X-Content-Type-Options"] = "nosniff"
+            await send(message)
+
         with structlog.contextvars.bound_contextvars(request_id=str(uuid.uuid4())):
-            await self.app(scope, receive, send)
+            await self.app(scope, receive, send_nosniff)
 
 
 class CoreAPI(FastAPI):
@@ -56,7 +66,11 @@ def create_app(settings: CoreSettings, deps: ApiDeps) -> FastAPI:
             await deps.engine.dispose()
 
     application: FastAPI = CoreAPI(
-        title="hco-core", version=__version__, lifespan=lifespan
+        title="hco-core",
+        version=__version__,
+        lifespan=lifespan,
+        docs_url=None,
+        redoc_url=None,
     )
     add_problem_handlers(application)
     application.include_router(health_router(deps))

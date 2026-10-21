@@ -5,6 +5,8 @@ A problem document never shows a config text, a `config_context` or
 fixed detail, because their text can hold config lines.
 """
 
+from collections.abc import Generator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Final
 
@@ -12,6 +14,7 @@ import structlog
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import InterfaceError, OperationalError
 from starlette.exceptions import HTTPException
 
 from hco_core.adapters.errors import DeviceNotFoundError, InvalidInventoryError
@@ -36,6 +39,10 @@ class MissingActorError(PermissionError):
 
 class DatabaseUnavailableError(RuntimeError):
     """The database does not answer."""
+
+
+class DeviceSyncError(RuntimeError):
+    """The database refused the device rows of a sync."""
 
 
 class SourceOfTruthUnavailableError(RuntimeError):
@@ -72,6 +79,12 @@ PROBLEMS: Final[dict[type[Exception], Problem]] = {
         "Database unavailable",
         "the database is unreachable",
     ),
+    DeviceSyncError: Problem(
+        500,
+        "device-sync-failed",
+        "Device sync failed",
+        "the database refused the devices",
+    ),
     SourceOfTruthUnavailableError: Problem(
         503,
         "sot-unavailable",
@@ -102,7 +115,13 @@ INTERNAL: Final = Problem(
 
 
 def problem_response(
-    status: int, code: str, title: str, detail: str, **extra: object
+    status: int,
+    code: str,
+    title: str,
+    detail: str,
+    *,
+    headers: Mapping[str, str] | None = None,
+    **extra: object,
 ) -> JSONResponse:
     """Return a problem document with the status, the code, and the detail."""
     return JSONResponse(
@@ -114,8 +133,23 @@ def problem_response(
             **extra,
         },
         status_code=status,
+        headers=headers,
         media_type=PROBLEM_JSON,
     )
+
+
+@contextmanager
+def database_errors() -> Generator[None]:
+    """Raise `DatabaseUnavailableError` when the database connection fails.
+
+    Raises:
+        DatabaseUnavailableError: For a connection or an operational error.
+
+    """
+    try:
+        yield
+    except (OperationalError, InterfaceError) as error:
+        raise DatabaseUnavailableError from error
 
 
 def add_problem_handlers(app: FastAPI) -> None:
@@ -127,8 +161,10 @@ def add_problem_handlers(app: FastAPI) -> None:
 def problem_for(_: Request, error: Exception) -> JSONResponse:
     """Return the problem document of the error."""
     match error:
-        case HTTPException(status_code=status, detail=detail):
-            return problem_response(status, f"http-{status}", detail, detail)
+        case HTTPException(status_code=status, detail=detail, headers=headers):
+            return problem_response(
+                status, f"http-{status}", detail, detail, headers=headers
+            )
         case RequestValidationError():
             return problem_response(
                 422,

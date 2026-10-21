@@ -4,6 +4,7 @@ The header is a development identity. Any client can send any name. Phase 3
 replaces it with OIDC.
 """
 
+import unicodedata
 from typing import Annotated, Final
 
 import structlog
@@ -21,6 +22,8 @@ def current_actor(
 ) -> Actor:
     """Return the actor of the request, from the `X-HCO-Actor` header.
 
+    The header bytes are UTF-8, and the name is their NFKC form.
+
     Raises:
         MissingActorError: If the header is missing.
         InvalidActorError: If the name is not valid for the approval service.
@@ -32,9 +35,16 @@ def current_actor(
             "a request that changes data needs it"
         )
         raise MissingActorError(message)
-    if not is_valid_name(x_hco_actor):
+    name = _utf8_name(x_hco_actor)
+    if name is None or not is_valid_name(name):
         raise InvalidActorError(x_hco_actor)
     request_id = structlog.contextvars.get_contextvars().get("request_id")
-    return Actor(
-        x_hco_actor, "user", "api", None if request_id is None else str(request_id)
-    )
+    return Actor(name, "user", "api", None if request_id is None else str(request_id))
+
+
+def _utf8_name(header: str) -> str | None:
+    """Return the NFKC name in the header, which Starlette decodes as Latin-1."""
+    try:
+        return unicodedata.normalize("NFKC", header.encode("latin-1").decode("utf-8"))
+    except UnicodeError:
+        return None
