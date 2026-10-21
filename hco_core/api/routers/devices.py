@@ -6,7 +6,6 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.postgresql import Insert, insert
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from hco_core.adapters.errors import DeviceNotFoundError
 from hco_core.api.actor import current_actor
@@ -75,8 +74,7 @@ def devices_router(deps: ApiDeps) -> APIRouter:
     @router.get("/{device_id}")
     async def show_device(device_id: str) -> Device:  # pyright: ignore[reportUnusedFunction]
         """Return the device with the row id or the source of truth id."""
-        async with deps.sessions() as session:
-            return _device(await find_device(session, sot.name, device_id))
+        return _device(await find_device(deps, device_id))
 
     @router.post("/sync")
     async def sync_devices(  # pyright: ignore[reportUnusedFunction]
@@ -102,9 +100,7 @@ def devices_router(deps: ApiDeps) -> APIRouter:
     return router
 
 
-async def find_device(
-    session: AsyncSession, sot_name: str, device_id: str
-) -> models.Device:
+async def find_device(deps: ApiDeps, device_id: str) -> models.Device:
     """Return the device with the row id, or with the id in the source of truth.
 
     Raises:
@@ -116,14 +112,15 @@ async def find_device(
         .where(
             or_(
                 models.Device.id == device_id,
-                (models.Device.sot_name == sot_name)
+                (models.Device.sot_name == deps.review.sot.name)
                 & (models.Device.sot_device_id == device_id),
             )
         )
         .order_by(models.Device.id != device_id)
         .limit(1)
     )
-    device = (await session.execute(query)).scalar_one_or_none()
+    async with deps.sessions() as session:
+        device = (await session.execute(query)).scalar_one_or_none()
     if device is None:
         message = (
             f"no device {device_id!r}; POST /api/v1/devices/sync reads the "

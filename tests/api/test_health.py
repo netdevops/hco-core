@@ -2,16 +2,30 @@
 
 import asyncio
 from http import HTTPStatus
+from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
+import pytest
+import structlog
 from pydantic import SecretStr
 
 from hco_core import __version__
-from hco_core.api.app import create_app
-from hco_core.api.deps import ApiDeps
+from hco_core.api.app import RequestIdMiddleware, app_from_env, create_app
+from hco_core.api.deps import (
+    ApiDeps,
+    MissingValidationKeyError,
+    build_deps,
+    resume_not_wired,
+)
 from hco_core.api.errors import PROBLEM_JSON
 from hco_core.db.session import create_database_engine, create_sessionmaker
 from hco_core.settings import CoreSettings
 from tests.api.conftest import Api
+
+if TYPE_CHECKING:
+    from starlette.types import Receive, Scope, Send
+
+    from hco_core.domain.approval import ApprovalDecision, ApprovalRequest
 
 UNREACHABLE_URL = "postgresql://hco:s3cret@127.0.0.1:1/hco"
 
@@ -61,3 +75,62 @@ def test_an_unknown_route_is_a_problem_document(api: Api) -> None:
         "status": 404,
         "detail": "Not Found",
     }
+
+
+def test_the_factory_builds_the_app_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    runner: asyncio.Runner,
+    restore_logging: None,
+    tmp_path: Path,
+) -> None:
+    """`app_from_env` reads the `HCO_` variables, and the stop disposes of the engine."""
+    del restore_logging
+    monkeypatch.setenv("HCO_VALIDATION_KEY", "k" * 32)
+    monkeypatch.setenv("HCO_SOT_PATH", str(tmp_path / "inventory.yaml"))
+
+    application = app_from_env()
+
+    async def start_and_stop() -> None:
+        async with application.router.lifespan_context(application):
+            pass
+
+    runner.run(start_and_stop())
+    assert application.title == "hco-core"
+
+
+def test_the_dependencies_need_the_validation_key() -> None:
+    """The mock connection verifies plan tokens with the key, so it is required."""
+    with pytest.raises(MissingValidationKeyError, match="HCO_VALIDATION_KEY"):
+        build_deps(CoreSettings(validation_key=None))
+
+
+def test_no_route_resumes_a_run_before_the_approvals_route(
+    runner: asyncio.Runner,
+) -> None:
+    """The approval service of the API refuses to resume until #11 wires it."""
+    with pytest.raises(NotImplementedError, match="#11"):
+        runner.run(
+            resume_not_wired(
+                cast("ApprovalRequest", None), cast("ApprovalDecision", None)
+            )
+        )
+
+
+def test_the_request_id_middleware_passes_a_lifespan_scope_through(
+    runner: asyncio.Runner,
+) -> None:
+    """Only an HTTP request gets a request id."""
+    seen: list[str] = []
+
+    async def inner(scope: "Scope", receive: "Receive", send: "Send") -> None:
+        del receive, send
+        await asyncio.sleep(0)
+        seen.append(scope["type"])
+        seen.extend(structlog.contextvars.get_contextvars())
+
+    middleware = RequestIdMiddleware(inner)
+    runner.run(
+        middleware({"type": "lifespan"}, cast("Receive", None), cast("Send", None))
+    )
+
+    assert seen == ["lifespan"]

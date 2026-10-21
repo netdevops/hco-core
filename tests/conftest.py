@@ -5,9 +5,11 @@ never skips it.
 """
 
 import asyncio
+import logging
 from collections.abc import Iterator
 
 import pytest
+import structlog
 from pydantic import SecretStr
 from sqlalchemy import Engine, create_engine, make_url, text
 from sqlalchemy.exc import OperationalError
@@ -141,3 +143,16 @@ def change_set_id(engine: Engine, clean_tables: None) -> str:
             {"id": CHANGE_SET_ID, "requester": REQUESTER},
         )
     return CHANGE_SET_ID
+
+
+@pytest.fixture
+def restore_logging() -> Iterator[None]:
+    """Put back the root handlers and the structlog defaults after each test."""
+    root = logging.getLogger()
+    handlers = root.handlers[:]
+    level = root.level
+    yield
+    root.handlers = handlers
+    root.setLevel(level)
+    structlog.reset_defaults()
+    structlog.contextvars.clear_contextvars()

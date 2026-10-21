@@ -16,6 +16,7 @@ from hco_core.services.ledger import NotificationLedger
 from hco_core.services.runs import RunRepository
 from hco_core.settings import CoreSettings
 
+API_PREFIX: Final = "/api/v1"
 DEFAULT_PAGE: Final = 50
 MAX_PAGE: Final = 500
 
