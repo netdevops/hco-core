@@ -113,7 +113,8 @@ class ApiClient:
             )
         return (
             f"cannot reach the API at {self.url} ({reason}); "
-            "check HCO_API_URL, and start the API with: hco-core serve api"
+            "check HCO_API_URL and that the API is running; the README section "
+            '"The REST API" shows how to start it'
         )
 
     def _error(self, response: httpx.Response) -> ApiError:
@@ -128,6 +129,8 @@ class ApiClient:
                 "add --as <name>, or set HCO_ACTOR"
             )
             return ApiError(message, problem)
+        if problem["type"] == f"{PROBLEM_TYPE}http-404":
+            return ApiError(f"{problem['detail']}; check HCO_API_URL", problem)
         return ApiError(_sentence(problem), problem)
 
 
