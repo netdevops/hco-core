@@ -219,8 +219,9 @@ def park_and_approve(
     run_id = str(parked.state.get("run_id"))
     closing: list[ApprovalDecision] = []
 
-    async def wake(request: ApprovalRequest, decision: ApprovalDecision) -> None:
+    async def wake(request: ApprovalRequest, decision: ApprovalDecision | None) -> None:
         assert request.state == "approved"
+        assert decision is not None
         closing.append(decision)
         await run_resumer.resume(run_id, decision)
 

@@ -77,7 +77,7 @@ def build_deps(settings: CoreSettings) -> ApiDeps:
 
 
 async def resume_not_wired(  # ruff: ignore[unused-async]
-    request: ApprovalRequest, decision: ApprovalDecision
+    request: ApprovalRequest, decision: ApprovalDecision | None
 ) -> None:
     """Refuse to resume a run. TODO(netdevops/hco-core#11): wire `RunResumer`.
 
