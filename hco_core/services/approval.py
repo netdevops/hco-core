@@ -199,12 +199,12 @@ class ApprovalService:
         One rejection rejects. The approvals close the request when they reach
         `required_count`. The resume callback runs once, after the commit that
         closes the request. If it raises, the decision stays recorded and the
-        error reaches the caller.
+        error reaches the caller. An unknown id raises
+        `ApprovalRequestNotFoundError`, and a closed or expired request raises
+        `ApprovalClosedError`.
 
         Raises:
             InvalidActorError: If the actor name is not valid.
-            ApprovalRequestNotFoundError: If no request has the id.
-            ApprovalClosedError: If the request is not pending, or expired.
             RequesterMayNotApproveError: If the actor is the requester.
             DuplicateDecisionError: If the actor already decided.
 
@@ -261,12 +261,12 @@ class ApprovalService:
         """Close a pending request with no decision, then call the resume callback once.
 
         Any valid actor may cancel, the requester also: a cancel only stops a
-        change. Phase 1 has no roles.
+        change. Phase 1 has no roles. An unknown id raises
+        `ApprovalRequestNotFoundError`, and a closed or expired request raises
+        `ApprovalClosedError`.
 
         Raises:
             InvalidActorError: If the actor name is not valid.
-            ApprovalRequestNotFoundError: If no request has the id.
-            ApprovalClosedError: If the request is not pending, or expired.
 
         """
         if not is_valid_name(actor):
@@ -343,7 +343,13 @@ def _check_requester(requester: str, recorded: str) -> None:
 async def _pending_row(
     session: AsyncSession, request_id: str
 ) -> models.ApprovalRequest:
-    """Lock the request row, and return it when it is pending and not expired."""
+    """Lock the request row, and return it when it is pending and not expired.
+
+    Raises:
+        ApprovalRequestNotFoundError: If no request has the id.
+        ApprovalClosedError: If the request is not pending, or expired.
+
+    """
     row = await session.get(models.ApprovalRequest, request_id, with_for_update=True)
     if row is None:
         message = f"no approval request has the id {request_id!r}"

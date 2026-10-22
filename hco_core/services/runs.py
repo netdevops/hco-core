@@ -177,6 +177,25 @@ class RunRepository:
             raise RunNotFoundError(message)
         return RunView(RunState(row[0]), row[1], row[2], row[3], row[4])
 
+    async def run_of_change_set(self, change_set_id: str) -> str:
+        """Return the id of the newest run of the change set.
+
+        Raises:
+            RunNotFoundError: If the change set has no run.
+
+        """
+        async with self._sessions() as session:
+            run_id = await session.scalar(
+                select(models.RemediationRun.id)
+                .where(models.RemediationRun.change_set_id == change_set_id)
+                .order_by(models.RemediationRun.id.desc())
+                .limit(1)
+            )
+        if run_id is None:
+            message = f"no remediation run in change set {change_set_id!r}"
+            raise RunNotFoundError(message)
+        return run_id
+
     async def update_run(
         self,
         run_id: str,
