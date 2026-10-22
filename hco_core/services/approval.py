@@ -261,8 +261,9 @@ class ApprovalService:
         """Close a pending request with no decision, then call the resume callback once.
 
         Any valid actor may cancel, the requester also: a cancel only stops a
-        change. Phase 1 has no roles. An unknown id raises
-        `ApprovalRequestNotFoundError`, and a closed or expired request raises
+        change. Phase 1 has no roles. A pending request past its expiry can
+        also be cancelled, because no sweep closes it in Phase 1. An unknown id
+        raises `ApprovalRequestNotFoundError`, and a closed request raises
         `ApprovalClosedError`.
 
         Raises:
@@ -272,7 +273,7 @@ class ApprovalService:
         if not is_valid_name(actor):
             raise InvalidActorError(actor)
         async with self._sessions.begin() as session:
-            row = await _pending_row(session, request_id)
+            row = await _pending_row(session, request_id, expired_ok=True)
             row.state = ApprovalState.CANCELLED
             add_audit_event(
                 session,
@@ -341,9 +342,11 @@ def _check_requester(requester: str, recorded: str) -> None:
 
 
 async def _pending_row(
-    session: AsyncSession, request_id: str
+    session: AsyncSession, request_id: str, *, expired_ok: bool = False
 ) -> models.ApprovalRequest:
-    """Lock the request row, and return it when it is pending and not expired.
+    """Lock the request row, and return it when it is pending.
+
+    With `expired_ok`, a pending request past its expiry is also returned.
 
     Raises:
         ApprovalRequestNotFoundError: If no request has the id.
@@ -354,16 +357,16 @@ async def _pending_row(
     if row is None:
         message = f"no approval request has the id {request_id!r}"
         raise ApprovalRequestNotFoundError(message)
-    closed = _closed_reason(row)
+    closed = _closed_reason(row, expired_ok=expired_ok)
     if closed:
         raise ApprovalClosedError(closed)
     return row
 
 
-def _closed_reason(row: models.ApprovalRequest) -> str:
+def _closed_reason(row: models.ApprovalRequest, *, expired_ok: bool = False) -> str:
     if row.state != ApprovalState.PENDING:
         return f"approval request {row.id!r} is {row.state}"
-    if row.expires_at <= datetime.now(UTC):
+    if not expired_ok and row.expires_at <= datetime.now(UTC):
         return f"approval request {row.id!r} expired at {row.expires_at.isoformat()}"
     return ""
 

@@ -42,7 +42,7 @@ from hco_core.graphs.review import (
     build_review_graph,
     start_run,
 )
-from hco_core.services.approval import ApprovalService, Resume
+from hco_core.services.approval import ApprovalClosedError, ApprovalService, Resume
 from hco_core.services.audit import Actor
 from hco_core.services.ledger import NotificationLedger
 from hco_core.services.resume import (
@@ -526,3 +526,73 @@ def test_a_decision_on_a_run_that_is_not_parked_is_refused(
 
     assert run_state(parked) == "DRAFT"
     assert request_row(parked) == (request.id, ApprovalState.APPROVED)
+
+
+@pytest.mark.parametrize(
+    "closers",
+    [("decide", "cancel", "decide"), ("cancel", "cancel", "decide")],
+    ids=["decide-first", "two-cancels"],
+)
+def test_concurrent_closers_close_once_and_resume_once(
+    runner: asyncio.Runner,
+    parked: Parked,
+    monkeypatch: pytest.MonkeyPatch,
+    closers: tuple[str, ...],
+) -> None:
+    """One closer wins, the others get `ApprovalClosedError`, and one resume runs."""
+    resumed: list[str] = []
+    original = RunResumer.resume_closed
+
+    async def counted(
+        self: RunResumer, request: ApprovalRequest, decision: ApprovalDecision | None
+    ) -> None:
+        resumed.append(request.state)
+        await original(self, request, decision)
+
+    monkeypatch.setattr(RunResumer, "resume_closed", counted)
+    runner.run(park(parked))
+    request_id, _ = request_row(parked)
+    approvals = wired(parked).approvals
+    runner.run(approvals.decide(request_id, "bob", Decision.APPROVE, "api"))
+    actors = ("carol", "dave", "erin")
+
+    async def race() -> list[ApprovalRequest | BaseException]:
+        return await asyncio.gather(
+            *(
+                approvals.decide(request_id, actor, Decision.APPROVE, "api")
+                if closer == "decide"
+                else approvals.cancel(request_id, actor, "api")
+                for closer, actor in zip(closers, actors, strict=True)
+            ),
+            return_exceptions=True,
+        )
+
+    outcomes = runner.run(race())
+
+    winners = [item for item in outcomes if isinstance(item, ApprovalRequest)]
+    losers = [item for item in outcomes if isinstance(item, ApprovalClosedError)]
+    assert (len(winners), len(losers)) == (1, 2)
+    assert resumed == [winners[0].state]
+    assert (request_row(parked)[1], run_state(parked)) == {
+        ApprovalState.APPROVED: ("approved", "APPROVED"),
+        ApprovalState.CANCELLED: ("cancelled", "BLOCKED"),
+    }[winners[0].state]
+
+
+def test_a_cancel_closes_a_request_past_its_expiry(
+    runner: asyncio.Runner, parked: Parked
+) -> None:
+    """Nothing else closes an expired request in Phase 1, so a cancel stops the run."""
+    runner.run(park(parked))
+    request_id, _ = request_row(parked)
+    with parked.engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE hco.approval_request SET expires_at = now() - interval '1 hour'"
+            )
+        )
+
+    runner.run(wired(parked).approvals.cancel(request_id, "bob", "api"))
+
+    assert request_row(parked) == (request_id, ApprovalState.CANCELLED)
+    assert run_state(parked) == "BLOCKED"

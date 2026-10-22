@@ -424,7 +424,8 @@ rows itself.
 - `cancel()` closes a pending request with no decision, writes one
   `audit_event` row, and calls the `resume` callback one time with no
   decision. Any valid actor can cancel, also the requester, because a cancel
-  only stops a change.
+  only stops a change. A cancel also closes a pending request past its
+  expiry, because Phase 1 has no expiry sweep.
 - The service also refuses with these typed errors:
   - `InvalidActorError`: a name is empty, has white space at an end, or has
     a control or invisible character.
