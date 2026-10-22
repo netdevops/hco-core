@@ -34,17 +34,20 @@ MAX_COMMENT: Final = 4000
 _ULID: Final = re.compile(ULID_PATTERN)
 
 
-class DecideBody(BaseModel):
-    """The decision of the actor in `X-HCO-Actor`, and a comment."""
-
-    decision: Decision
-    comment: Annotated[str, Field(max_length=MAX_COMMENT)] = ""
+type Comment = Annotated[str, Field(max_length=MAX_COMMENT)]
+"""Why the actor decides or cancels."""
 
 
 class CancelBody(BaseModel):
     """Why the actor cancels the request."""
 
-    comment: Annotated[str, Field(max_length=MAX_COMMENT)] = ""
+    comment: Comment = ""
+
+
+class DecideBody(CancelBody):
+    """The decision of the actor in `X-HCO-Actor`, and a comment."""
+
+    decision: Decision
 
 
 class ApprovalSummary(BaseModel):
@@ -110,6 +113,7 @@ def approvals_router(deps: ApiDeps) -> APIRouter:
     @router.get("/{request_id}")
     async def show_approval(request_id: str) -> ApprovalDetail:  # pyright: ignore[reportUnusedFunction]
         """Return the request, its decisions, and the state of its run."""
+        _check_id(request_id)
         return await _detail(deps, request_id)
 
     @router.post("/{request_id}/decide")
@@ -144,14 +148,14 @@ def approvals_router(deps: ApiDeps) -> APIRouter:
 
 
 async def _detail(deps: ApiDeps, request_id: str) -> ApprovalDetail:
-    _check_id(request_id)
     runs = deps.review.runs
     with database_errors():
         request, decisions = await deps.review.approvals.get_request(request_id)
         run_id = await runs.run_of_change_set(request.change_set_id)
         run = await runs.get_run(run_id)
     return ApprovalDetail(
-        **_summary(request, run_id).model_dump(),
+        **request.model_dump(exclude={"interrupt_key"}),
+        run_id=run_id,
         run_state=run.state,
         decisions=decisions,
     )
@@ -171,11 +175,5 @@ def _check_id(request_id: str) -> None:
 
 def _summary(request: ApprovalRequest, run_id: str) -> ApprovalSummary:
     return ApprovalSummary(
-        id=request.id,
-        change_set_id=request.change_set_id,
-        run_id=run_id,
-        state=request.state,
-        required_count=request.required_count,
-        requester=request.requester,
-        expires_at=request.expires_at,
+        **request.model_dump(exclude={"interrupt_key"}), run_id=run_id
     )

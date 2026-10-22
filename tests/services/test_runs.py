@@ -281,3 +281,16 @@ def test_a_change_set_and_its_run_are_written_in_one_transaction(
         "change_set.create",
         "remediation_run.create",
     ]
+
+
+def test_the_run_of_a_change_set_is_the_newest_and_none_is_named(
+    runner: asyncio.Runner, runs: RunRepository, change_set_id: str, device_id: str
+) -> None:
+    """The lookup gives the newest run, and a change set with no run raises."""
+    with pytest.raises(RunNotFoundError, match="change set"):
+        runner.run(runs.run_of_change_set(change_set_id))
+    actor = Actor(REQUESTER, "user", "api")
+    runner.run(runs.create_run(change_set_id, device_id, "thread-1", actor))
+    newest = runner.run(runs.create_run(change_set_id, device_id, "thread-2", actor))
+
+    assert runner.run(runs.run_of_change_set(change_set_id)) == newest
