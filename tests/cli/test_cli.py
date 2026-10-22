@@ -434,7 +434,42 @@ def test_an_unreachable_api_names_hco_api_url_and_hides_the_password() -> None:
     assert "http://127.0.0.1:1" in result.output
     assert "s3cret" not in result.output
     assert "user" not in result.output
+    assert "serve api" not in result.output
+    assert 'README section "The REST API"' in result.output
     assert result.output.count("\n") == 1
+
+
+def test_a_404_that_names_no_resource_points_to_hco_api_url(
+    api: FakeApi, invoke: Callable[..., Result]
+) -> None:
+    """A path that the API does not have means a wrong `HCO_API_URL`."""
+    api.on("GET", "/devices", problem(404, "http-404", "Not Found"))
+
+    result = invoke("device", "list")
+
+    assert result.exit_code == 1
+    assert result.output == "Error: Not Found; check HCO_API_URL.\n"
+
+
+def test_the_main_help_names_the_settings_and_the_exit_codes() -> None:
+    """A new operator finds the two variables and the exit codes at the top."""
+    result = CliRunner().invoke(cli.app, ["--help"], env={"COLUMNS": "200"})
+
+    assert result.exit_code == 0
+    for text in ("HCO_API_URL", "HCO_ACTOR", "exit code"):
+        assert text in result.output
+
+
+def test_the_run_create_help_ends_with_the_exit_codes() -> None:
+    """The help shows the exit codes and no part for developers."""
+    result = CliRunner().invoke(
+        cli.app, ["run", "create", "--help"], env={"COLUMNS": "200"}
+    )
+
+    assert result.exit_code == 0
+    assert "3 when the wait times out" in result.output
+    assert "Raises" not in result.output
+    assert "typer.Exit" not in result.output
 
 
 def test_run_list_shows_a_table_and_the_next_page(
