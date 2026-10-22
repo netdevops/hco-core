@@ -924,8 +924,8 @@ or to a device.
   `HCO_ACTOR`. A name with a space at either end, or with a control or
   invisible character, stops the command with exit code 2.
 - `run create` exits 0 when the run is `AWAITING_APPROVAL` or `APPROVED`, 1
-  when it ends in a different state such as `BLOCKED`, and 2 when the wait
-  times out. `--timeout` (0 to 3600 seconds) also limits each request.
+  when it ends in a different state such as `BLOCKED`, 2 for a bad option or
+  user name, and 3 when the wait times out. `--timeout` (0 to 3600 seconds) also limits each request.
 - If the API does not answer a change in time, it may have done the change.
   Check with `run list` or `approval list` before you try again.
 - `approve`, `reject`, and `cancel` take the approval request id.

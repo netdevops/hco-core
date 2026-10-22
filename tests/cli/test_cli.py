@@ -21,6 +21,7 @@ DEVICE_ROW_ID = "01JDEVICE00000000000000000"
 CREATED = "2026-10-22T15:11:56Z"
 API_URL = "http://api.test:8080"
 USAGE_ERROR = 2
+TIMED_OUT_EXIT = 3
 WAIT = 3
 TIMED_OUT = "timed out"
 HOSTILE_NAME = "r1\x1b]0;pwned\x07\x1b[31mRED\r\nFAKE: approved\x9b"
@@ -228,7 +229,7 @@ def test_run_create_stops_waiting_at_the_timeout(
         "run", "create", "--device", "r1", "--as", "alice", "--timeout", "0"
     )
 
-    assert result.exit_code == cli.EXIT_STILL_WORKING, result.output
+    assert result.exit_code == TIMED_OUT_EXIT, result.output
     assert f"Run {RUN_ID} is still COLLECTING" in result.output
     assert f"hco-core run show {RUN_ID}" in result.output
 
@@ -252,6 +253,29 @@ def test_a_blocked_run_says_where_to_read_the_errors(
     assert result.output == (
         f"Run {RUN_ID} on device edge-1 is BLOCKED. "
         f"Show the errors with: hco-core run show {RUN_ID}\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("state", "closing"),
+    [
+        ("APPROVED", "Show it with"),
+        ("REJECTED", "Show it with"),
+        ("BLOCKED", "Show the errors with"),
+    ],
+)
+def test_each_end_state_has_its_own_closing_sentence(
+    api: FakeApi, invoke: Callable[..., Result], state: str, closing: str
+) -> None:
+    """Only a blocked run points to its errors."""
+    api.on("POST", "/runs", created())
+    api.on("GET", f"/runs/{RUN_ID}", httpx.Response(200, json=run_detail(state)))
+
+    result = invoke("run", "create", "--device", "r1", "--as", "alice")
+
+    assert result.output == (
+        f"Run {RUN_ID} on device edge-1 is {state}. "
+        f"{closing}: hco-core run show {RUN_ID}\n"
     )
 
 
