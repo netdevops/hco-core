@@ -6,7 +6,9 @@ to the database or to a device.
 """
 
 import json
+import math
 import time
+import unicodedata
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -16,14 +18,16 @@ from urllib.parse import quote
 import httpx
 import typer
 from pydantic import BaseModel, ValidationError
+from pydantic_settings import BaseSettings
 
 from hco_core.api.deps import MAX_PAGE
 from hco_core.api.routers.approvals import ApprovalDetail, ApprovalPage
 from hco_core.api.routers.devices import DevicePage, SyncResult
 from hco_core.api.routers.runs import RunCreated, RunDetail, RunDiff, RunPage
-from hco_core.cli.client import ApiClient, ApiError, printable
+from hco_core.cli.client import TIMEOUT_SECONDS, ApiClient, ApiError, printable
 from hco_core.domain.approval import Decision, RunState
-from hco_core.settings import CoreSettings
+from hco_core.services.approval import is_valid_name
+from hco_core.settings import ClientSettings
 
 POLL_SECONDS: Final = 0.5
 WORKING_STATES: Final = frozenset(
@@ -37,6 +41,14 @@ WORKING_STATES: Final = frozenset(
 )
 """The states of a run whose review graph has not stopped yet."""
 LABEL_WIDTH: Final = 16
+MAX_WAIT_SECONDS: Final = 3600.0
+MIN_REQUEST_SECONDS: Final = 2.0
+"""The shortest time that one request of `run create` waits for the API."""
+PARKED_STATES: Final = frozenset({RunState.AWAITING_APPROVAL, RunState.APPROVED})
+"""The states in which `run create` exits 0."""
+EXIT_FAILED: Final = 1
+EXIT_USAGE: Final = 2
+EXIT_STILL_WORKING: Final = 2
 
 app = typer.Typer(
     name="hco-core",
@@ -94,15 +106,31 @@ def run_create(  # ruff: ignore[too-many-arguments]
         bool, typer.Option(help="Wait until the review of the run stops.")
     ] = True,
     timeout: Annotated[
-        float, typer.Option(min=0, help="The maximum number of seconds to wait.")
+        float,
+        typer.Option(
+            min=0,
+            max=MAX_WAIT_SECONDS,
+            help="The maximum number of seconds to wait, also for each request.",
+        ),
     ] = 30.0,
     as_json: JsonOption = False,
 ) -> None:
-    """Start a review of the device. The run parks for approval, or it ends BLOCKED."""
+    """Start a review of the device. The run parks for approval, or it ends BLOCKED.
+
+    The exit code is 0 when the run is AWAITING_APPROVAL or APPROVED, 1 when it
+    ends in a different state or on an error, and 2 when the wait times out.
+
+    Raises:
+        typer.Exit: With exit code 1 or 2, when the run is not parked.
+
+    """
+    if math.isnan(timeout):
+        _fail("--timeout must be a number of seconds", EXIT_USAGE)
     client = _client(ctx, actor)
     body = {"device_id": device} | ({"title": title} if title else {})
+    deadline = time.monotonic() + timeout
     with _reported(as_json=as_json):
-        created = client.post("/runs", RunCreated, body)
+        created = client.post("/runs", RunCreated, body, _request_timeout(deadline))
         if not wait:
             _show(
                 created,
@@ -111,8 +139,12 @@ def run_create(  # ruff: ignore[too-many-arguments]
                 as_json=as_json,
             )
             return
-        run = _wait(client, created.run_id, timeout)
+        run = _wait(client, created.run_id, deadline)
     _show(run, _outcome(run, timeout), as_json=as_json)
+    if run.state in WORKING_STATES:
+        raise typer.Exit(EXIT_STILL_WORKING)
+    if run.state not in PARKED_STATES:
+        raise typer.Exit(EXIT_FAILED)
 
 
 @run_app.command("list")
@@ -339,7 +371,8 @@ def device_sync(
     """Write each device of the source of truth to the database, through the API."""
     with _reported(as_json=as_json):
         result = _client(ctx, actor).post("/devices/sync", SyncResult)
-    _show(result, f"Synced {result.synced} devices.", as_json=as_json)
+    noun = "device" if result.synced == 1 else "devices"
+    _show(result, f"Synced {result.synced} {noun}.", as_json=as_json)
 
 
 def _decide(
@@ -357,9 +390,10 @@ def _decide(
     _show(detail, _request_outcome(detail), as_json=as_json)
 
 
-def _settings() -> CoreSettings:
+def load_settings[Settings: BaseSettings](kind: type[Settings]) -> Settings:
+    """Return the settings, or stop with exit code 1 and one sentence per bad variable."""
     try:
-        return CoreSettings()
+        return kind()
     except ValidationError as error:
         problems = "; ".join(
             f"HCO_{'_'.join(map(str, item['loc'])).upper()}: {item['msg']}"
@@ -369,17 +403,37 @@ def _settings() -> CoreSettings:
 
 
 def _client(ctx: typer.Context, actor: str | None = None) -> ApiClient:
-    """Return a client of `HCO_API_URL`. A test gives a transport in `ctx.obj`."""
-    settings = _settings()
+    """Return a client of `HCO_API_URL`. A test gives a transport in `ctx.obj`.
+
+    An `--as` that is given, also an empty one, is never replaced by `HCO_ACTOR`.
+    """
+    settings = load_settings(ClientSettings)
+    name = settings.actor if actor is None else actor
+    if name is not None and not is_valid_name(unicodedata.normalize("NFKC", name)):
+        source = "HCO_ACTOR" if actor is None else "--as"
+        _fail(
+            f"the user name in {source} is not valid; give a name with no space "
+            "at either end and no control or invisible character",
+            EXIT_USAGE,
+        )
     transport = ctx.obj if isinstance(ctx.obj, httpx.BaseTransport) else None
-    return ApiClient(settings.api_url, actor or settings.actor, transport)
+    try:
+        return ApiClient(settings.api_url, name, transport)
+    except ApiError as error:
+        _fail(str(error))
 
 
-def _wait(client: ApiClient, run_id: str, timeout: float) -> RunDetail:
-    """Return the run when its review stops, or when the timeout ends."""
-    deadline = time.monotonic() + timeout
+def _request_timeout(deadline: float) -> float:
+    """Return the time for one request: what remains of the wait, in bounds."""
+    remaining = deadline - time.monotonic()
+    return min(TIMEOUT_SECONDS, max(MIN_REQUEST_SECONDS, remaining))
+
+
+def _wait(client: ApiClient, run_id: str, deadline: float) -> RunDetail:
+    """Return the run when its review stops, or when the deadline passes."""
+    path = f"/runs/{quote(run_id, safe='')}"
     while True:
-        run = client.get(f"/runs/{run_id}", RunDetail)
+        run = client.get(path, RunDetail, timeout=_request_timeout(deadline))
         if run.state not in WORKING_STATES or time.monotonic() >= deadline:
             return run
         time.sleep(POLL_SECONDS)
@@ -423,13 +477,13 @@ def _reported(*, as_json: bool) -> Generator[None]:
         _fail(str(error))
 
 
-def _fail(sentence: str) -> NoReturn:
+def _fail(sentence: str, code: int = EXIT_FAILED) -> NoReturn:
     typer.echo(f"Error: {printable(sentence).rstrip('.')}.", err=True)
-    raise typer.Exit(1)
+    raise typer.Exit(code)
 
 
 def _show(model: BaseModel, sentence: str, *, as_json: bool) -> None:
-    typer.echo(model.model_dump_json(indent=2) if as_json else sentence)
+    typer.echo(model.model_dump_json(indent=2) if as_json else printable(sentence))
 
 
 def _table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> None:
@@ -450,7 +504,7 @@ def _labels(*pairs: tuple[str, str]) -> None:
 
 def _next_page(items: str, cursor: str | None) -> None:
     if cursor is not None:
-        typer.echo(f"More {items}: add --cursor {cursor}")
+        typer.echo(printable(f"More {items}: add --cursor {cursor}"))
 
 
 def _time(value: datetime) -> str:
