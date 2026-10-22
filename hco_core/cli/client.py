@@ -19,7 +19,8 @@ from hco_core.api.errors import PROBLEM_TYPE
 
 TIMEOUT_SECONDS: Final = 30.0
 MAX_DETAIL: Final = 500
-_SPACES: Final = re.compile(r"\s+")
+_LINE_BREAKS: Final = re.compile(r"[^\S ]+")
+"""White space other than a space, such as a tab or a new line."""
 
 
 class ApiError(Exception):
@@ -140,10 +141,13 @@ def _list(value: object) -> list[object]:
 
 
 def printable(text: str) -> str:
-    """Return the text with no control character, on one line, and cut."""
+    """Return the text on one line, with no control character, and cut.
+
+    The spaces at the start stay, so a config line keeps its indentation.
+    """
     visible = "".join(
         character
         for character in text
         if character.isspace() or unicodedata.category(character)[0] != "C"
     )
-    return _SPACES.sub(" ", visible).strip()[:MAX_DETAIL]
+    return _LINE_BREAKS.sub(" ", visible).rstrip()[:MAX_DETAIL]

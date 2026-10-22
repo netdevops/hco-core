@@ -292,7 +292,7 @@ def approval_list(
         _show(page, "No pending approval requests.", as_json=as_json)
         return
     _table(
-        ("REQUEST", "RUN", "REQUESTER", "APPROVALS", "EXPIRES"),
+        ("REQUEST", "RUN", "REQUESTER", "NEEDED", "EXPIRES"),
         [
             (
                 item.id,

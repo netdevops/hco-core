@@ -511,7 +511,7 @@ def test_run_diff_prints_the_remediation_and_the_rollback(
         httpx.Response(
             200,
             json={
-                "remediation": ["ntp server 192.0.2.10"],
+                "remediation": ["interface Gi1", "  no shutdown\t"],
                 "rollback": ["no ntp server 192.0.2.10"],
                 "future": ["hostname edge-1"],
             },
@@ -522,7 +522,7 @@ def test_run_diff_prints_the_remediation_and_the_rollback(
 
     assert result.exit_code == 0, result.output
     assert result.output == (
-        "Remediation:\n  ntp server 192.0.2.10\nRollback:\n  no ntp server 192.0.2.10\n"
+        "Remediation:\n  interface Gi1\n    no shutdown\nRollback:\n  no ntp server 192.0.2.10\n"
     )
 
 
@@ -652,7 +652,7 @@ def test_approval_list_shows_the_pending_requests(
     empty = invoke("approval", "list")
 
     header, row = result.output.splitlines()
-    assert header.split() == ["REQUEST", "RUN", "REQUESTER", "APPROVALS", "EXPIRES"]
+    assert header.split() == ["REQUEST", "RUN", "REQUESTER", "NEEDED", "EXPIRES"]
     assert row.split() == [REQUEST_ID, RUN_ID, "alice", "2", CREATED]
     assert empty.output == "No pending approval requests.\n"
 
