@@ -28,7 +28,7 @@ from tests.api.conftest import Api
 if TYPE_CHECKING:
     from starlette.types import Receive, Scope, Send
 
-    from hco_core.domain.approval import ApprovalDecision, ApprovalRequest
+    from hco_core.domain.approval import ApprovalRequest
 
 UNREACHABLE_URL = "postgresql://hco:s3cret@127.0.0.1:1/hco"
 
@@ -146,13 +146,9 @@ def test_the_dependencies_need_the_validation_key() -> None:
 def test_no_route_resumes_a_run_before_the_approvals_route(
     runner: asyncio.Runner,
 ) -> None:
-    """The approval service of the API refuses to resume until #11 wires it."""
-    with pytest.raises(NotImplementedError, match="#11"):
-        runner.run(
-            resume_not_wired(
-                cast("ApprovalRequest", None), cast("ApprovalDecision", None)
-            )
-        )
+    """The approval service of the API refuses to resume until #36 wires it."""
+    with pytest.raises(NotImplementedError, match="#36"):
+        runner.run(resume_not_wired(cast("ApprovalRequest", None), None))
 
 
 def test_the_request_id_middleware_passes_a_lifespan_scope_through(

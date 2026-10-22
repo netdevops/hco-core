@@ -421,6 +421,10 @@ rows itself.
   one for `LOW` and `MEDIUM`, two for `HIGH` and `CRITICAL`.
 - When a decision closes the request, `decide()` calls the `resume` callback
   one time. Phase 1 does not check roles.
+- `cancel()` closes a pending request with no decision, writes one
+  `audit_event` row, and calls the `resume` callback one time with no
+  decision. Any valid actor can cancel, also the requester, because a cancel
+  only stops a change.
 - The service also refuses with these typed errors:
   - `InvalidActorError`: a name is empty, has white space at an end, or has
     a control or invisible character.
@@ -680,14 +684,19 @@ only in tests.
 - The saver connection adds `-c search_path=hco` after the `options` of
   `HCO_DATABASE_URL`, so a setting such as `statement_timeout` stays. A URL that
   does not parse gives `InvalidDatabaseUrlError`, which does not show the URL.
-- `RunResumer(runs, graph, settings).resume(run_id, decision)` is the only way a
-  parked run continues. It reads the thread of the run, opens a new saver,
-  compiles a new graph, and resumes with `Command(resume=...)` and
-  `durability="sync"`. A thread with no pending interrupt gives
-  `NotParkedError`, and nothing is written.
-- Call `resume` only after `ApprovalService.decide()` closes the request, from
-  the `resume` callback of the service. The payload never approves:
-  `record_decision` reads the closed request from the database.
+- `RunResumer(runs, graph, settings, approvals=...).resume(run_id, decision)`
+  is the only way a parked run continues. It reads the thread of the run,
+  opens a new saver, compiles a new graph, and resumes with
+  `Command(resume=...)` and `durability="sync"`. A thread with no pending
+  interrupt gives `NotParkedError`, and nothing is written.
+- `resume` refuses a run whose approval request is still pending with
+  `RequestPendingError`, and the run stays parked. The payload never
+  approves: `record_decision` reads the closed request from the database.
+- `review_with_resume(settings, sessions, review)` builds the review
+  dependencies with an approval service whose `resume` callback is
+  `RunResumer.resume_closed`. Each closed request resumes its run one time.
+  After a cancel, a parked run ends in `BLOCKED`, and a run that is not
+  parked keeps its state.
 
 ```python
 import asyncio

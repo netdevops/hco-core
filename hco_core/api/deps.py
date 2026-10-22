@@ -77,14 +77,14 @@ def build_deps(settings: CoreSettings) -> ApiDeps:
 
 
 async def resume_not_wired(  # ruff: ignore[unused-async]
-    request: ApprovalRequest, decision: ApprovalDecision
+    request: ApprovalRequest, decision: ApprovalDecision | None
 ) -> None:
-    """Refuse to resume a run. TODO(netdevops/hco-core#11): wire `RunResumer`.
+    """Refuse to resume a run. TODO(netdevops/hco-core#36): wire `RunResumer`.
 
     Raises:
         NotImplementedError: Always. No route of this API decides a request.
 
     """
     del request, decision
-    message = "the approvals route arrives with netdevops/hco-core#11"
+    message = "the approvals route arrives with netdevops/hco-core#36"
     raise NotImplementedError(message)

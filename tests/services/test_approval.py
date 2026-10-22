@@ -35,7 +35,7 @@ from tests.conftest import REQUESTER
 
 LATER = datetime.now(UTC) + timedelta(hours=72)
 
-type Resumed = list[tuple[ApprovalRequest, ApprovalDecision]]
+type Resumed = list[tuple[ApprovalRequest, ApprovalDecision | None]]
 
 
 @pytest.fixture
@@ -50,7 +50,9 @@ def service(
 ) -> ApprovalService:
     """Give a service whose resume callback records each call."""
 
-    async def resume(request: ApprovalRequest, decision: ApprovalDecision) -> None:
+    async def resume(
+        request: ApprovalRequest, decision: ApprovalDecision | None
+    ) -> None:
         await asyncio.sleep(0)
         resumed.append((request, decision))
 
@@ -342,10 +344,10 @@ def test_a_failed_resume_keeps_the_decision(
     """The error reaches the caller, and the decision and its audit row stay."""
 
     async def broken_resume(
-        request: ApprovalRequest, decision: ApprovalDecision
+        request: ApprovalRequest, decision: ApprovalDecision | None
     ) -> None:
         await asyncio.sleep(0)
-        message = f"cannot resume {request.id} after {decision.actor}"
+        message = f"cannot resume {request.id} after {decision}"
         raise RuntimeError(message)
 
     service = ApprovalService(sessions, resume=broken_resume)
@@ -420,6 +422,7 @@ def test_the_quorum_of_the_tier_approves_and_resumes_once(  # ruff: ignore[too-m
     assert len(resumed) == 1
     closed, decision = resumed[0]
     assert closed.state is ApprovalState.APPROVED
+    assert decision is not None
     assert decision.actor == approvers[-1]
     assert decision.comment == "ok"
 
@@ -436,7 +439,9 @@ def test_one_rejection_rejects_and_resumes(
     closed = runner.run(service.decide(request.id, "bob", Decision.REJECT, "ui", "no"))
 
     assert closed.state is ApprovalState.REJECTED
-    assert [decision.decision for _, decision in resumed] == [Decision.REJECT]
+    assert [decision and decision.decision for _, decision in resumed] == [
+        Decision.REJECT
+    ]
 
 
 def test_a_closed_request_takes_no_more_decisions(
@@ -527,3 +532,70 @@ def test_get_request_returns_the_request_and_its_decisions(
     ]
     with pytest.raises(ApprovalRequestNotFoundError):
         runner.run(service.get_request("missing"))
+
+
+def test_cancel_closes_the_request_and_resumes_once_with_no_decision(
+    runner: asyncio.Runner,
+    service: ApprovalService,
+    change_set_id: str,
+    resumed: Resumed,
+    engine: Engine,
+) -> None:
+    """A cancel is the one close with no decision, and it writes one audit event."""
+    request = open_request(runner, service, change_set_id, RiskTier.HIGH)
+
+    cancelled = runner.run(service.cancel(request.id, "carol", "api", "wrong device"))
+
+    assert cancelled.state is ApprovalState.CANCELLED
+    assert resumed == [(cancelled, None)]
+    with engine.connect() as connection:
+        audit = connection.execute(
+            text("SELECT actor, surface, action, before, after FROM hco.audit_event")
+        ).one()
+    assert tuple(audit) == (
+        "carol",
+        "api",
+        "approval.cancel",
+        {"state": "pending"},
+        {"state": "cancelled", "comment": "wrong device"},
+    )
+
+
+def test_the_requester_may_cancel(
+    runner: asyncio.Runner, service: ApprovalService, change_set_id: str
+) -> None:
+    """A cancel stops a change, so the requester may cancel their own request."""
+    request = open_request(runner, service, change_set_id)
+
+    cancelled = runner.run(service.cancel(request.id, REQUESTER, "cli"))
+
+    assert cancelled.state is ApprovalState.CANCELLED
+
+
+def test_a_closed_request_cannot_be_cancelled_or_decided_after_a_cancel(
+    runner: asyncio.Runner,
+    service: ApprovalService,
+    change_set_id: str,
+    resumed: Resumed,
+) -> None:
+    """A cancel after a close, or a decision after a cancel, is refused."""
+    first = open_request(runner, service, change_set_id)
+    runner.run(service.cancel(first.id, "bob", "api"))
+
+    with pytest.raises(ApprovalClosedError, match="cancelled"):
+        runner.run(service.decide(first.id, "carol", Decision.APPROVE, "api"))
+    with pytest.raises(ApprovalClosedError, match="cancelled"):
+        runner.run(service.cancel(first.id, "carol", "api"))
+    assert len(resumed) == 1
+
+
+def test_cancel_refuses_an_unknown_request_and_an_invalid_actor(
+    runner: asyncio.Runner, service: ApprovalService, change_set_id: str
+) -> None:
+    """The cancel names the unknown id, and checks the actor name first."""
+    request = open_request(runner, service, change_set_id)
+
+    with pytest.raises(ApprovalRequestNotFoundError, match="01JNOSUCHREQUEST"):
+        runner.run(service.cancel("01JNOSUCHREQUEST0000000000", "bob", "api"))
+    with pytest.raises(InvalidActorError):
+        runner.run(service.cancel(request.id, " bob", "api"))

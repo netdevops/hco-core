@@ -3,7 +3,8 @@
 import asyncio
 from collections.abc import AsyncGenerator, Iterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -21,7 +22,13 @@ from hco_core.adapters.secrets.env import EnvSecretsProvider
 from hco_core.adapters.sot.yaml_file import YamlSourceOfTruth
 from hco_core.db.models import CHECKPOINT_TABLES, SCHEMA
 from hco_core.db.types import new_id
-from hco_core.domain.approval import ApprovalDecision, ApprovalRequest, Decision
+from hco_core.domain.approval import (
+    ApprovalDecision,
+    ApprovalRequest,
+    ApprovalState,
+    Decision,
+)
+from hco_core.domain.risk import RiskTier
 from hco_core.graphs import review
 from hco_core.graphs.checkpointer import (
     checkpointer_conninfo,
@@ -38,7 +45,12 @@ from hco_core.graphs.review import (
 from hco_core.services.approval import ApprovalService, Resume
 from hco_core.services.audit import Actor
 from hco_core.services.ledger import NotificationLedger
-from hco_core.services.resume import NotParkedError, RunResumer
+from hco_core.services.resume import (
+    NotParkedError,
+    RequestPendingError,
+    RunResumer,
+    review_with_resume,
+)
 from hco_core.services.runs import RunRepository
 from hco_core.settings import CoreSettings
 from tests.conftest import REQUESTER
@@ -205,10 +217,12 @@ def test_park_and_resume_run_request_approval_twice_with_one_request_and_message
 
 def resumer(parked: Parked, settings: CoreSettings | None = None) -> RunResumer:
     """Return a resumer on new dependencies."""
+    deps = parked.deps()
     return RunResumer(
         RunRepository(parked.sessions),
-        build_review_graph(parked.deps()),
+        build_review_graph(deps),
         settings or parked.settings,
+        approvals=deps.approvals,
     )
 
 
@@ -219,8 +233,9 @@ def park_and_approve(
     run_id = str(parked.state.get("run_id"))
     closing: list[ApprovalDecision] = []
 
-    async def wake(request: ApprovalRequest, decision: ApprovalDecision) -> None:
+    async def wake(request: ApprovalRequest, decision: ApprovalDecision | None) -> None:
         assert request.state == "approved"
+        assert decision is not None
         closing.append(decision)
         await run_resumer.resume(run_id, decision)
 
@@ -396,3 +411,118 @@ def test_a_malformed_url_error_does_not_show_the_password() -> None:
     assert "S3CRET" not in str(raised.value)
     assert raised.value.__cause__ is None
     assert raised.value.__context__ is None
+
+
+def wired(parked: Parked) -> ApprovalDeps:
+    """Return new dependencies whose approval service resumes the run."""
+    return review_with_resume(
+        parked.settings,
+        parked.sessions,
+        lambda approvals: replace(parked.deps(), approvals=approvals),
+    )
+
+
+def request_row(parked: Parked) -> tuple[str, str]:
+    """Return the id and the state of the one approval request."""
+    ((request_id, state),) = scalar_rows(
+        parked.engine, "SELECT id, state FROM hco.approval_request"
+    )
+    return str(request_id), str(state)
+
+
+def test_a_resume_while_the_request_is_pending_is_refused(
+    runner: asyncio.Runner, parked: Parked
+) -> None:
+    """The run stays parked and its request stays pending, never `BLOCKED`."""
+    runner.run(park(parked))
+    request_id, _ = request_row(parked)
+    early = ApprovalDecision(
+        id=new_id(),
+        request_id=request_id,
+        actor="bob",
+        actor_kind="user",
+        decision=Decision.APPROVE,
+        surface="api",
+        comment="",
+    )
+
+    with pytest.raises(RequestPendingError, match=request_id):
+        runner.run(resumer(parked).resume(str(parked.state.get("run_id")), early))
+
+    assert run_state(parked) == "AWAITING_APPROVAL"
+    assert request_row(parked) == (request_id, "pending")
+    assert runner.run(next_nodes(parked)) == ("request_approval",)
+
+
+def test_the_wired_service_resumes_the_run_when_the_quorum_closes_it(
+    runner: asyncio.Runner, parked: Parked
+) -> None:
+    """The first of two approvals leaves the run parked; the second resumes it."""
+    runner.run(park(parked))
+    request_id, _ = request_row(parked)
+    approvals = wired(parked).approvals
+
+    runner.run(approvals.decide(request_id, "bob", Decision.APPROVE, "api"))
+    assert run_state(parked) == "AWAITING_APPROVAL"
+    runner.run(approvals.decide(request_id, "carol", Decision.APPROVE, "api"))
+
+    assert run_state(parked) == "APPROVED"
+    assert runner.run(next_nodes(parked)) == ()
+
+
+def test_a_cancel_resumes_the_parked_run_to_blocked(
+    runner: asyncio.Runner, parked: Parked
+) -> None:
+    """The graph reads the cancelled request and ends the run in `BLOCKED`."""
+    runner.run(park(parked))
+    request_id, _ = request_row(parked)
+
+    runner.run(wired(parked).approvals.cancel(request_id, "bob", "api"))
+
+    assert run_state(parked) == "BLOCKED"
+    ((error,),) = scalar_rows(parked.engine, "SELECT error FROM hco.remediation_run")
+    assert error == {"errors": ["record_decision: the approval request is cancelled"]}
+    assert request_row(parked) == (request_id, ApprovalState.CANCELLED)
+
+
+def test_a_cancel_of_a_run_that_is_not_parked_closes_only_the_request(
+    runner: asyncio.Runner, parked: Parked
+) -> None:
+    """A run with no pending interrupt keeps its state after a cancel."""
+    approvals = wired(parked).approvals
+    request = runner.run(
+        approvals.upsert_request(
+            str(parked.state.get("change_set_id")),
+            RiskTier.LOW,
+            1,
+            REQUESTER,
+            datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+
+    runner.run(approvals.cancel(request.id, "bob", "api"))
+
+    assert run_state(parked) == "DRAFT"
+    assert request_row(parked) == (request.id, ApprovalState.CANCELLED)
+
+
+def test_a_decision_on_a_run_that_is_not_parked_is_refused(
+    runner: asyncio.Runner, parked: Parked
+) -> None:
+    """The decision stays recorded, and `NotParkedError` reaches the caller."""
+    approvals = wired(parked).approvals
+    request = runner.run(
+        approvals.upsert_request(
+            str(parked.state.get("change_set_id")),
+            RiskTier.LOW,
+            1,
+            REQUESTER,
+            datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+
+    with pytest.raises(NotParkedError):
+        runner.run(approvals.decide(request.id, "bob", Decision.APPROVE, "api"))
+
+    assert run_state(parked) == "DRAFT"
+    assert request_row(parked) == (request.id, ApprovalState.APPROVED)

@@ -52,8 +52,8 @@ DEFAULT_IGNORABLE_RANGES = (
 MAX_ACTOR_LENGTH = 255
 """The longest actor name. The name columns hold 255 characters."""
 
-type Resume = Callable[[ApprovalRequest, ApprovalDecision], Awaitable[None]]
-"""Wake the parked run with the decision that closed its request."""
+type Resume = Callable[[ApprovalRequest, ApprovalDecision | None], Awaitable[None]]
+"""Wake the parked run of a closed request. A cancel gives no decision."""
 
 
 class ApprovalError(Exception):
@@ -199,12 +199,12 @@ class ApprovalService:
         One rejection rejects. The approvals close the request when they reach
         `required_count`. The resume callback runs once, after the commit that
         closes the request. If it raises, the decision stays recorded and the
-        error reaches the caller.
+        error reaches the caller. An unknown id raises
+        `ApprovalRequestNotFoundError`, and a closed or expired request raises
+        `ApprovalClosedError`.
 
         Raises:
             InvalidActorError: If the actor name is not valid.
-            ApprovalRequestNotFoundError: If no request has the id.
-            ApprovalClosedError: If the request is not pending, or expired.
             RequesterMayNotApproveError: If the actor is the requester.
             DuplicateDecisionError: If the actor already decided.
 
@@ -213,15 +213,7 @@ class ApprovalService:
             raise InvalidActorError(actor)
         identity = _identity(actor)
         async with self._sessions.begin() as session:
-            row = await session.get(
-                models.ApprovalRequest, request_id, with_for_update=True
-            )
-            if row is None:
-                message = f"no approval request has the id {request_id!r}"
-                raise ApprovalRequestNotFoundError(message)
-            closed = _closed_reason(row)
-            if closed:
-                raise ApprovalClosedError(closed)
+            row = await _pending_row(session, request_id)
             if identity == _identity(row.requester):
                 message = f"requester {actor!r} may not decide on their own change"
                 raise RequesterMayNotApproveError(message)
@@ -261,6 +253,40 @@ class ApprovalService:
             recorded = _to_decision(decision_row)
         if request.state is not ApprovalState.PENDING:
             await self._resume(request, recorded)
+        return request
+
+    async def cancel(
+        self, request_id: str, actor: str, surface: Surface, comment: str = ""
+    ) -> ApprovalRequest:
+        """Close a pending request with no decision, then call the resume callback once.
+
+        Any valid actor may cancel, the requester also: a cancel only stops a
+        change. Phase 1 has no roles. An unknown id raises
+        `ApprovalRequestNotFoundError`, and a closed or expired request raises
+        `ApprovalClosedError`.
+
+        Raises:
+            InvalidActorError: If the actor name is not valid.
+
+        """
+        if not is_valid_name(actor):
+            raise InvalidActorError(actor)
+        async with self._sessions.begin() as session:
+            row = await _pending_row(session, request_id)
+            row.state = ApprovalState.CANCELLED
+            add_audit_event(
+                session,
+                AuditEntry(
+                    actor=Actor(actor, "user", surface),
+                    action="approval.cancel",
+                    object_type="approval_request",
+                    object_id=request_id,
+                    before={"state": ApprovalState.PENDING},
+                    after={"state": row.state, "comment": comment},
+                ),
+            )
+            request = _to_request(row)
+        await self._resume(request, None)
         return request
 
     async def get_request(
@@ -312,6 +338,26 @@ def _check_requester(requester: str, recorded: str) -> None:
             f"the requester {requester!r} is not the recorded requester {recorded!r}"
         )
         raise RequesterMismatchError(message)
+
+
+async def _pending_row(
+    session: AsyncSession, request_id: str
+) -> models.ApprovalRequest:
+    """Lock the request row, and return it when it is pending and not expired.
+
+    Raises:
+        ApprovalRequestNotFoundError: If no request has the id.
+        ApprovalClosedError: If the request is not pending, or expired.
+
+    """
+    row = await session.get(models.ApprovalRequest, request_id, with_for_update=True)
+    if row is None:
+        message = f"no approval request has the id {request_id!r}"
+        raise ApprovalRequestNotFoundError(message)
+    closed = _closed_reason(row)
+    if closed:
+        raise ApprovalClosedError(closed)
+    return row
 
 
 def _closed_reason(row: models.ApprovalRequest) -> str:

@@ -495,7 +495,9 @@ class RecordingChannel(NotificationChannel):
         self.sent.append(message)
 
 
-async def no_resume(request: ApprovalRequest, decision: ApprovalDecision) -> None:
+async def no_resume(
+    request: ApprovalRequest, decision: ApprovalDecision | None
+) -> None:
     """Do nothing. The tests resume the graph themselves."""
     del request, decision
     await asyncio.sleep(0)
