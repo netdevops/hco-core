@@ -5,6 +5,7 @@ A problem document never shows a config text, a `config_context` or
 fixed detail, because their text can hold config lines.
 """
 
+import errno
 from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -14,7 +15,7 @@ import structlog
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from sqlalchemy.exc import InterfaceError, OperationalError
+from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
 from starlette.exceptions import HTTPException
 
 from hco_core.adapters.errors import DeviceNotFoundError, InvalidInventoryError
@@ -77,7 +78,8 @@ PROBLEMS: Final[dict[type[Exception], Problem]] = {
         503,
         "database-unavailable",
         "Database unavailable",
-        "the database is unreachable",
+        "the database does not answer; check HCO_DATABASE_URL, "
+        "and read the server log for the cause",
     ),
     DeviceSyncError: Problem(
         500,
@@ -89,7 +91,8 @@ PROBLEMS: Final[dict[type[Exception], Problem]] = {
         503,
         "sot-unavailable",
         "Source of truth unavailable",
-        "the source of truth is not readable",
+        "the source of truth is not readable; check HCO_SOT_PATH, "
+        "and read the server log for the cause",
     ),
     UnknownPlatformError: Problem(
         400, "unknown-platform", "Unknown platform", "no driver has the platform name"
@@ -108,6 +111,15 @@ PROBLEMS: Final[dict[type[Exception], Problem]] = {
     ),
 }
 """The problem of each error class. A subclass without an entry uses its base."""
+
+DATABASE_REASONS: Final = (
+    ("password authentication failed", "password authentication failed (28P01)"),
+    ("Connection refused", "connection refused"),
+    ("does not exist", "database or role does not exist"),
+    ("timeout expired", "timeout"),
+    ("could not translate host name", "unknown host"),
+)
+"""Phrases of a connection error that has no SQLSTATE, and the fixed reason to log."""
 
 INTERNAL: Final = Problem(
     500, "internal-error", "Internal Server Error", "the server failed"
@@ -179,9 +191,39 @@ def problem_for(_: Request, error: Exception) -> JSONResponse:
         case _:
             problem = _problem(error)
             if problem.status >= INTERNAL.status:
-                _log.error("request_failed", error=type(error).__name__)
+                _log.error(
+                    "request_failed", error=type(error).__name__, **_cause(error)
+                )
             detail = str(error) if problem.detail is None else problem.detail
             return problem_response(problem.status, problem.code, problem.title, detail)
+
+
+def _cause(error: Exception) -> dict[str, str]:
+    """Return the class and a fixed reason of the cause, never its text."""
+    cause = error.__cause__
+    if cause is None:
+        return {}
+    return {"cause": type(cause).__name__, "reason": failure_reason(cause)}
+
+
+def failure_reason(cause: BaseException) -> str:
+    """Return a fixed reason for an OS or a database error, with no path or URL."""
+    match cause:
+        case TimeoutError():
+            return "timeout"
+        case OSError(errno=int(code)) if code in errno.errorcode:
+            return errno.errorcode[code]
+        case DBAPIError(orig=orig):
+            sqlstate = getattr(orig, "sqlstate", None)
+            if isinstance(sqlstate, str):
+                return f"SQLSTATE {sqlstate}"
+            text = str(orig)
+            return next(
+                (reason for phrase, reason in DATABASE_REASONS if phrase in text),
+                "unknown",
+            )
+        case _:
+            return "unknown"
 
 
 def _problem(error: Exception) -> Problem:

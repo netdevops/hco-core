@@ -760,6 +760,10 @@ arrives in a later Phase 1 release.
   the name follows the rule of `ApprovalService`.
 - `GET /openapi.json` gives the OpenAPI schema. The API serves no HTML page.
 - A sync writes the devices in chunks of 1000 rows, in one transaction.
+- A sync adds and updates devices. It does not remove a device that is no
+  longer in the inventory.
+- A 503 names the setting to check, `HCO_SOT_PATH` or `HCO_DATABASE_URL`. The
+  server log line `request_failed` gives the `cause` and the `reason`.
 
 WARNING: Any client can send any name in `X-HCO-Actor`. It is a development
 identity for Phase 1. Do not expose the API on a shared network. Phase 3

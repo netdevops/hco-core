@@ -1,8 +1,10 @@
 """The device routes: sync from the source of truth, list, and show."""
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import replace
 from http import HTTPStatus
+from pathlib import Path
 
 import pytest
 from pydantic import SecretStr
@@ -162,15 +164,53 @@ def test_an_unknown_device_is_404_naming_the_id(api: Api) -> None:
     assert "'missing'" in response.json()["detail"]
 
 
-def test_a_missing_inventory_file_is_503_with_no_path(api: Api) -> None:
-    """The source of truth is not readable, and the document shows no path."""
-    (api.root / "inventory.yaml").unlink()
+SOT_DETAIL = (
+    "the source of truth is not readable; check HCO_SOT_PATH, "
+    "and read the server log for the cause"
+)
 
-    response = api.call("POST", "/api/v1/devices/sync", actor=ACTOR)
 
+def remove_inventory(path: Path) -> None:
+    """Remove the inventory file."""
+    path.unlink()
+
+
+def lock_inventory(path: Path) -> None:
+    """Take every permission from the inventory file."""
+    path.chmod(0)
+
+
+@pytest.mark.parametrize(
+    ("break_inventory", "cause", "reason"),
+    [
+        (remove_inventory, "FileNotFoundError", "ENOENT"),
+        (lock_inventory, "PermissionError", "EACCES"),
+    ],
+    ids=["missing", "mode-000"],
+)
+def test_an_unreadable_inventory_is_503_naming_the_setting_and_the_cause(
+    api: Api, break_inventory: Callable[[Path], None], cause: str, reason: str
+) -> None:
+    """The detail names the setting, and the log names the cause with no path."""
+    inventory = api.root / "inventory.yaml"
+    break_inventory(inventory)
+
+    with capture_logs() as lines:
+        response = api.call("POST", "/api/v1/devices/sync", actor=ACTOR)
+
+    inventory.unlink(missing_ok=True)
     assert response.status_code == HTTPStatus.SERVICE_UNAVAILABLE
     assert response.json()["type"] == "urn:hco-core:problem:sot-unavailable"
+    assert response.json()["detail"] == SOT_DETAIL
+    assert {
+        "event": "request_failed",
+        "log_level": "error",
+        "error": "SourceOfTruthUnavailableError",
+        "cause": cause,
+        "reason": reason,
+    } in lines
     assert str(api.root) not in response.text
+    assert str(api.root) not in repr(lines)
 
 
 def test_a_sync_larger_than_one_statement_writes_every_device(
