@@ -8,6 +8,9 @@ from typing import TYPE_CHECKING, cast
 import pytest
 import structlog
 from pydantic import SecretStr
+from sqlalchemy import make_url
+from sqlalchemy.exc import DBAPIError
+from structlog.testing import capture_logs
 
 from hco_core import __version__
 from hco_core.api.app import RequestIdMiddleware, app_from_env, create_app
@@ -17,7 +20,7 @@ from hco_core.api.deps import (
     build_deps,
     resume_not_wired,
 )
-from hco_core.api.errors import PROBLEM_JSON
+from hco_core.api.errors import PROBLEM_JSON, failure_reason
 from hco_core.db.session import create_database_engine, create_sessionmaker
 from hco_core.settings import CoreSettings
 from tests.api.conftest import Api
@@ -42,25 +45,61 @@ def test_health_reports_the_database_and_the_version(api: Api) -> None:
     }
 
 
-def test_health_is_503_when_the_database_is_unreachable(
-    api: Api, runner: asyncio.Runner
+DATABASE_DETAIL = (
+    "the database does not answer; check HCO_DATABASE_URL, "
+    "and read the server log for the cause"
+)
+
+
+@pytest.mark.parametrize(
+    ("password", "port", "reason"),
+    [
+        ("s3cret", 1, "connection refused"),
+        ("s3cret", None, "password authentication failed (28P01)"),
+    ],
+    ids=["closed-port", "wrong-password"],
+)
+def test_health_is_503_naming_the_setting_and_logging_a_safe_cause(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
+    api: Api,
+    runner: asyncio.Runner,
+    database_url: str,
+    password: str,
+    port: int | None,
+    reason: str,
 ) -> None:
-    """An unreachable database gives a 503 problem that shows no URL part."""
-    settings = CoreSettings(database_url=SecretStr(UNREACHABLE_URL))
+    """The detail names the setting, and the log names the cause with no URL part."""
+    url = make_url(database_url).set(password=password)
+    url = url if port is None else url.set(port=port)
+    settings = CoreSettings(
+        database_url=SecretStr(url.render_as_string(hide_password=False))
+    )
     engine = create_database_engine(settings)
     deps = ApiDeps(
         engine=engine, sessions=create_sessionmaker(engine), review=api.deps.review
     )
     down = Api(runner, create_app(settings, deps), deps, api.root)
 
-    response = down.call("GET", "/health")
+    with capture_logs() as lines:
+        response = down.call("GET", "/health")
 
+    runner.run(engine.dispose())
     assert response.status_code == HTTPStatus.SERVICE_UNAVAILABLE
     assert response.headers["content-type"] == PROBLEM_JSON
     assert response.json()["type"] == "urn:hco-core:problem:database-unavailable"
-    assert "s3cret" not in response.text
-    assert "127.0.0.1" not in response.text
-    runner.run(engine.dispose())
+    assert response.json()["detail"] == DATABASE_DETAIL
+    failed = [line for line in lines if line["event"] == "request_failed"]
+    assert failed == [
+        {
+            "event": "request_failed",
+            "log_level": "error",
+            "error": "DatabaseUnavailableError",
+            "cause": "OperationalError",
+            "reason": reason,
+        }
+    ]
+    for leak in (password, str(url.host), str(url.port)):
+        assert leak not in response.text
+        assert leak not in repr(lines)
 
 
 def test_an_unknown_route_is_a_problem_document(api: Api) -> None:
@@ -155,3 +194,25 @@ def test_each_response_says_nosniff(api: Api) -> None:
     """A browser must not guess a content type from a device field."""
     for path in ("/health", "/api/v1/nothing"):
         assert api.call("GET", path).headers["x-content-type-options"] == "nosniff"
+
+
+class StatementError(Exception):
+    """A database error with a SQLSTATE, as psycopg raises after a connect."""
+
+    sqlstate = "42P01"
+
+
+@pytest.mark.parametrize(
+    ("cause", "reason"),
+    [
+        (TimeoutError(), "timeout"),
+        (OSError("no errno"), "unknown"),
+        (DBAPIError("SELECT 1", None, StatementError("no table")), "SQLSTATE 42P01"),
+        (DBAPIError("SELECT 1", None, Exception("host secret.example")), "unknown"),
+        (ValueError("text"), "unknown"),
+    ],
+    ids=["timeout", "os-without-errno", "sqlstate", "unknown-database", "other"],
+)
+def test_the_failure_reason_is_a_fixed_text(cause: BaseException, reason: str) -> None:
+    """The reason never repeats the text of the error."""
+    assert failure_reason(cause) == reason
