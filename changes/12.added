@@ -1,0 +1,3 @@
+Added the `hco-core` command: `run create|list|show|diff`, `approve`, `reject`, `cancel`, `approval list`, and `device list|sync`. It talks only to the REST API.
+Added `hco-core db upgrade`, which upgrades the schema and makes the checkpointer tables, and `hco-core serve api`, which starts the API.
+Added a development compose stack with Postgres and the API. The README quick start takes a fixture change to `APPROVED` in nine commands.

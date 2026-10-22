@@ -46,7 +46,7 @@ jobs:
       - run: poetry run mypy hco_core
       - run: poetry run pyright
       - name: Allow one unconditional interrupt() in each graph node
-        run: poetry run python -m hco_core.lint.interrupts hco_core
+        run: poetry run hco-core lint-interrupts hco_core
       - run: poetry run pytest -q --cov=hco_core --cov-report=term-missing --cov-fail-under=95
       - name: Hold the validation gate at 100% line and branch coverage
         run: poetry run pytest -q tests/engine/test_validation.py --cov=hco_core.engine.validation --cov-branch --cov-report=term-missing --cov-fail-under=100
@@ -90,7 +90,7 @@ jobs:
       - run: poetry run mypy hco_core
       - run: poetry run pyright
       - name: Allow one unconditional interrupt() in each graph node
-        run: poetry run python -m hco_core.lint.interrupts hco_core
+        run: poetry run hco-core lint-interrupts hco_core
       - run: poetry run pytest -q --cov=hco_core --cov-report=term-missing --cov-fail-under=95
       - name: Hold the validation gate at 100% line and branch coverage
         run: poetry run pytest -q tests/engine/test_validation.py --cov=hco_core.engine.validation --cov-branch --cov-report=term-missing --cov-fail-under=100

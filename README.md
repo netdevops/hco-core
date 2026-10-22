@@ -12,6 +12,38 @@ analysers can be written by anyone.
 pip install hco-core
 ```
 
+## Quick start
+
+Run a change on the YAML fixture to `APPROVED`, with the REST API and the
+`hco-core` command. You need Docker with Compose and Poetry. Run the commands
+in the repository folder:
+
+```bash
+docker compose -f development/docker-compose.yml up -d --build --wait
+docker compose -f development/docker-compose.yml exec hco-core-api hco-core db upgrade
+poetry install
+poetry run hco-core device sync --as alice
+poetry run hco-core run create --device r1 --as alice
+poetry run hco-core approval list
+poetry run hco-core approve <request_id> --as bob
+poetry run hco-core approve <request_id> --as carol
+poetry run hco-core run show <run_id>
+```
+
+- The stack starts Postgres and the API on `http://127.0.0.1:8080`. The API
+  reads `tests/fixtures/inventory.yaml` with the mock connection.
+- `run create` waits until the run is `AWAITING_APPROVAL`, then shows the
+  run id. `approval list` shows the request id of the run.
+- With no assessment layer, the risk tier is `HIGH`, so two persons who did
+  not request the change must approve it. After the second approval, the run
+  is `APPROVED`. No command writes to a device.
+- `development/.env` holds development values only, such as a fixed
+  `HCO_VALIDATION_KEY`. If port 8080 is in use, set `HCO_API_PORT` there and
+  `HCO_API_URL` in your shell.
+
+Stop the stack and delete its data with
+`docker compose -f development/docker-compose.yml down -v`.
+
 ## The nine ports
 
 | Port | Responsibility |
@@ -379,7 +411,8 @@ schema `hco`: `device`, `config_snapshot`, `change_set`, `remediation_run`,
   `UNIQUE (run_id, channel, purpose)` permits one notification for each
   purpose.
 
-Upgrade the schema with `hco_core.db.migrate.upgrade(CoreSettings())`. The
+Upgrade the schema with `hco-core db upgrade`, or with
+`hco_core.db.migrate.upgrade(CoreSettings())`. The
 Alembic version table is `hco.alembic_version`.
 
 `CoreSettings` reads these environment variables. `.env.example` shows each
@@ -726,7 +759,7 @@ with an `interrupt()` that only some runs reach, asks the person a different
 question on each run. The `interrupts` lint rule stops this in CI:
 
 ```bash
-poetry run python -m hco_core.lint.interrupts hco_core
+poetry run hco-core lint-interrupts hco_core
 ```
 
 The command prints each violation as `path:line: function: reason` and exits 1.
@@ -903,6 +936,33 @@ checkpoint of the interrupt. A decision that closes the request in that gap
 gets `run-not-parked`, and the run stays parked on the closed request. The
 run-state reconciler (R4, a later phase) closes both gaps.
 
+## The command line
+
+`hco-core` is a client of the REST API at `HCO_API_URL`. It approves only
+through `POST /api/v1/approvals/{id}/decide`. It never writes to the database,
+except `db upgrade`, and it never writes to a device.
+
+| Command | Does |
+|---|---|
+| `run create --device <id> [--title] [--no-wait] [--timeout]` | Starts a run, and waits until its review stops. |
+| `run list [--state]`, `run show <id>`, `run diff <id>` | Shows the runs, one run, or the remediation and the rollback of a run. |
+| `approval list` | Shows the pending approval requests of the parked runs. |
+| `approve <id> [--comment]`, `reject <id> --comment` | Decides on an approval request. |
+| `cancel <id> [--comment]` | Closes an approval request with no decision. |
+| `device list`, `device sync` | Shows the devices, or reads the source of truth. |
+| `db upgrade` | Upgrades the schema in `HCO_DATABASE_URL`, then makes the checkpointer tables. |
+| `serve api [--host] [--port]` | Starts the API on `127.0.0.1:8080`. |
+| `lint-interrupts <paths>` | Runs the rule of one unconditional `interrupt()` in each node. |
+
+- A command that changes data sends your user name in `X-HCO-Actor`. Give it
+  with `--as <name>`, or set `HCO_ACTOR`.
+- A list shows a table. `--limit` and `--cursor` move through the pages.
+- `--json` prints the answer of the API as JSON. `run diff --json` also gives
+  the future config.
+- An error is one sentence on stderr, and the exit code is 1. With `--json`,
+  stdout also gets the problem document. A message never shows a password
+  from `HCO_API_URL` or `HCO_DATABASE_URL`.
+
 ## Requirements
 
 Python 3.12 to 3.14.
@@ -938,7 +998,7 @@ poetry run ruff format --check .
 poetry run ruff check .
 poetry run mypy hco_core
 poetry run pyright
-poetry run python -m hco_core.lint.interrupts hco_core
+poetry run hco-core lint-interrupts hco_core
 poetry run pytest --cov=hco_core
 ```
 

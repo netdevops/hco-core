@@ -12,3 +12,4 @@ htmlcov/
 .env
 creds.env
 site/
+!development/.env
