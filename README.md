@@ -421,6 +421,10 @@ rows itself.
   one for `LOW` and `MEDIUM`, two for `HIGH` and `CRITICAL`.
 - When a decision closes the request, `decide()` calls the `resume` callback
   one time. Phase 1 does not check roles.
+- `cancel()` closes a pending request with no decision, writes one
+  `audit_event` row, and calls the `resume` callback one time with no
+  decision. Any valid actor can cancel, also the requester, because a cancel
+  only stops a change.
 - The service also refuses with these typed errors:
   - `InvalidActorError`: a name is empty, has white space at an end, or has
     a control or invisible character.
@@ -680,14 +684,17 @@ only in tests.
 - The saver connection adds `-c search_path=hco` after the `options` of
   `HCO_DATABASE_URL`, so a setting such as `statement_timeout` stays. A URL that
   does not parse gives `InvalidDatabaseUrlError`, which does not show the URL.
-- `RunResumer(runs, graph, settings).resume(run_id, decision)` is the only way a
-  parked run continues. It reads the thread of the run, opens a new saver,
-  compiles a new graph, and resumes with `Command(resume=...)` and
-  `durability="sync"`. A thread with no pending interrupt gives
-  `NotParkedError`, and nothing is written.
-- Call `resume` only after `ApprovalService.decide()` closes the request, from
-  the `resume` callback of the service. The payload never approves:
-  `record_decision` reads the closed request from the database.
+- `RunResumer(runs, graph, settings, approvals=...).resume(run_id, decision)`
+  is the only way a parked run continues. It reads the thread of the run,
+  opens a new saver, compiles a new graph, and resumes with
+  `Command(resume=...)` and `durability="sync"`. A thread with no pending
+  interrupt gives `NotParkedError`, and nothing is written.
+- `resume` refuses a run whose approval request is still pending with
+  `RequestPendingError`, and the run stays parked. The payload never
+  approves: `record_decision` reads the closed request from the database.
+- `review_with_resume(settings, sessions, review)` builds the review
+  dependencies with an approval service whose `resume` callback is
+  `RunResumer.resume_closed`. Each closed request resumes its run one time.
 
 ```python
 import asyncio
@@ -737,8 +744,8 @@ rule does not follow a local alias such as `ask = interrupt`, or `getattr`.
 ## The REST API
 
 `hco_core.api.app.create_app(settings, deps)` builds the FastAPI app. No route
-writes to a device. A run stops at `AWAITING_APPROVAL`, and the approvals route
-arrives in a later Phase 1 release.
+writes to a device. A run stops at `AWAITING_APPROVAL` until its approval
+request closes.
 
 | Route | Does |
 |---|---|
@@ -748,6 +755,9 @@ arrives in a later Phase 1 release.
 | `POST /api/v1/runs` | Creates a run on one device and returns 202. The review graph runs after the response. |
 | `GET /api/v1/runs`, `/{id}` | Lists the runs, newest first, or shows one with its state, tiers, and errors. |
 | `GET /api/v1/runs/{id}/diff` | Shows the remediation, the rollback, and the future config as lines. |
+| `GET /api/v1/approvals`, `/{id}` | Lists the pending approval requests, newest first, or shows one with its decisions and its run state. |
+| `POST /api/v1/approvals/{id}/decide` | Records the decision of the actor. A decision that closes the request resumes the run. |
+| `POST /api/v1/approvals/{id}/cancel` | Closes the request with no decision. A parked run ends in `BLOCKED`. |
 
 - A list returns `items` and `next_cursor`. Send `?cursor=<next_cursor>` for the
   next page, and `?limit=` for the page size (1 to 500).
@@ -812,6 +822,69 @@ The mock connection reads the running config of device `r1` from
 example `HCO_SECRET_R1_USERNAME` and `HCO_SECRET_R1_PASSWORD`. If the process
 stops before a run parks, the run stays in its last state. Phase 1 does not
 continue it.
+
+### Approvals through the API
+
+`POST /api/v1/approvals/{id}/decide` is the one place where the API approves a
+change. The route calls `ApprovalService.decide()` with the surface `api` and
+the actor in `X-HCO-Actor`. The API never sets a run state. When a decision
+closes the request, `RunResumer` resumes the parked run one time, after the
+commit. The review graph then reads the closed request and sets the run state.
+
+- The resume runs before the response, so `run_state` in the response is the
+  state after the decision: `AWAITING_APPROVAL`, `APPROVED`, or `REJECTED`.
+- With no assessment layer, the tier is `HIGH`, and the request needs two
+  approvals. One rejection rejects the request.
+- `RunResumer` never resumes a run whose request is still pending. Two
+  decisions at the same time lock the request row one after the other, so
+  only one of them closes the request, and the run resumes one time.
+- A cancel closes the request with no decision. A parked run then ends in
+  `BLOCKED`. Any actor can cancel in Phase 1.
+
+| Problem `type` suffix | Status | When |
+|---|---|---|
+| `requester-may-not-approve` | 403 | The requester decides on their own change. |
+| `duplicate-decision` | 409 | The actor already decided on the request. |
+| `approval-closed` | 409 | The request is approved, rejected, cancelled, or expired. |
+| `run-not-parked` | 409 | The decision closed the request, but the run is not parked. The decision stays recorded. |
+| `approval-not-found` | 404 | No request has the id. |
+
+Find the request of the run, and show it:
+
+```bash
+curl -s localhost:8080/api/v1/approvals
+curl -s localhost:8080/api/v1/approvals/<request_id>
+```
+
+Alice requested the run, so she gets 403. Bob and Carol approve it:
+
+```bash
+curl -s -X POST -H 'X-HCO-Actor: alice' -H 'Content-Type: application/json' \
+  -d '{"decision": "approve"}' localhost:8080/api/v1/approvals/<request_id>/decide
+curl -s -X POST -H 'X-HCO-Actor: bob' -H 'Content-Type: application/json' \
+  -d '{"decision": "approve", "comment": "checked the diff"}' \
+  localhost:8080/api/v1/approvals/<request_id>/decide
+curl -s -X POST -H 'X-HCO-Actor: carol' -H 'Content-Type: application/json' \
+  -d '{"decision": "approve"}' localhost:8080/api/v1/approvals/<request_id>/decide
+curl -s localhost:8080/api/v1/runs/<run_id>
+```
+
+After the second approval, the request is `approved` and the run is
+`APPROVED`:
+
+```json
+{"state": "approved", "required_count": 2, "run_state": "APPROVED"}
+```
+
+To stop a change, cancel its request:
+
+```bash
+curl -s -X POST -H 'X-HCO-Actor: bob' -H 'Content-Type: application/json' \
+  -d '{"comment": "wrong device"}' localhost:8080/api/v1/approvals/<request_id>/cancel
+```
+
+If the process stops after a decision closes the request and before the run
+resumes, the run stays at `AWAITING_APPROVAL`. Phase 1 does not continue it.
 
 ## Requirements
 
