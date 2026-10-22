@@ -58,9 +58,23 @@ EXIT_FAILED: Final = 1
 EXIT_USAGE: Final = 2
 EXIT_STILL_WORKING: Final = 3
 
+RUN_CREATE_HELP: Final = (
+    "Start a review of the device. The run parks for approval, or it ends BLOCKED."
+    "\n\nThe exit code is 0 when the run is AWAITING_APPROVAL or APPROVED, 1 when"
+    " it ends in a different state or on an error, 2 for a bad option or user"
+    " name, and 3 when the wait times out."
+)
+"""The help of `run create`. The docstring also holds the part for developers."""
+
 app = typer.Typer(
     name="hco-core",
-    help="Review configuration changes and approve them through the hco-core API.",
+    help=(
+        "Review configuration changes and approve them through the hco-core API."
+        "\n\nThe commands send requests to the API at HCO_API_URL. Your user name"
+        " comes from --as or from HCO_ACTOR. The exit code is 0 on success, 1 on"
+        " an error, and 2 for a bad option or user name. run create also exits 3"
+        " when its wait times out."
+    ),
     no_args_is_help=True,
     add_completion=False,
     pretty_exceptions_enable=False,
@@ -102,7 +116,7 @@ CursorOption = Annotated[
 ]
 
 
-@run_app.command("create")
+@run_app.command("create", help=RUN_CREATE_HELP)
 def run_create(  # ruff: ignore[too-many-arguments]
     ctx: typer.Context,
     *,
