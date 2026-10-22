@@ -1,0 +1,2 @@
+Added the approval step of the review graph: it sets the risk tier, sends one message, and parks the run until a person approves or rejects it.
+Added a default for a run with no risk assessment: the run waits for approval at the HIGH tier, and its unknowns say so.

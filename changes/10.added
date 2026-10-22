@@ -1,0 +1,3 @@
+Added the REST API with `GET /health` and device sync, list, and show. Start it with `uvicorn --factory hco_core.api.app:app_from_env`.
+Added the `X-HCO-Actor` header. A request that changes data needs it in Phase 1, and any client can send any name.
+Added RFC 9457 problem documents for each API error, such as a 404 that names the unknown device.

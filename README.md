@@ -3,8 +3,8 @@
 **Ports and domain models for building network configuration orchestration on
 [`hier_config`](https://github.com/netdevops/hier_config).**
 
-Nothing here talks to a network, a database, or a language model. These are
-contracts: nine protocols and the vocabulary they speak, so that
+The ports and the domain models talk to no network, database, or language
+model. They are contracts: nine protocols and the vocabulary they speak, so that
 source-of-truth adapters, device drivers, secret stores, vector stores, and risk
 analysers can be written by anyone.
 
@@ -293,14 +293,15 @@ mismatch.
 
 ## Development adapters
 
-`hco_core.adapters` holds three adapters that need no external service. Use
+`hco_core.adapters` holds four adapters that need no external service. Use
 them for development and for tests.
 
 - `YamlSourceOfTruth(path)` reads one inventory file on each call.
 - `EnvSecretsProvider()` reads credentials from environment variables.
 - `MockConnectionDriver(transcripts_dir, token_key=key)` replays transcripts.
+- `LogChannel()` writes each notification to the log.
 - `hco_core.adapters.registry` selects an adapter by its name: `yaml`, `env`,
-  or `mock`. It holds built-in factories only. An unknown name gives an error
+  `mock`, or `log`. It holds built-in factories only. An unknown name gives an error
   that lists the known names.
 
 An inventory file holds devices and topology:
@@ -355,14 +356,560 @@ for each command, such as `show_version.txt`.
 - `apply()` verifies the validation token, then always raises
   `DeviceWritesDisabledError`. Phase 4 adds device writes.
 
+## Database and settings
+
+`hco_core.db` holds the Postgres schema of hco-core. It has eight tables in
+schema `hco`: `device`, `config_snapshot`, `change_set`, `remediation_run`,
+`approval_request`, `approval_decision`, `audit_event`, and
+`notification_delivery`.
+
+- Each table has a ULID key, `created_at`, `updated_at`, and a `tenant_id`.
+  `tenant_id` stays empty in version 1.
+- `PlatformName` stores a platform by its name, such as `CISCO_IOS`. It never
+  stores the positional `Platform` value.
+- A trigger refuses a decision by the person who requested the change, also on
+  a direct `INSERT` or `UPDATE`.
+- A second trigger refuses a change of the requester of an approval request,
+  also through `INSERT ... ON CONFLICT DO UPDATE`.
+- The requester and the actor must have no white space at either end, such as
+  a space, a tab, a new line, or a non-breaking space. They must not be empty.
+  The comparison is case-sensitive.
+- `device.platform_name` must be upper case and must not be a number.
+- `UNIQUE (request_id, actor)` permits one decision for each person.
+  `UNIQUE (run_id, channel, purpose)` permits one notification for each
+  purpose.
+
+Upgrade the schema with `hco_core.db.migrate.upgrade(CoreSettings())`. The
+Alembic version table is `hco.alembic_version`.
+
+`CoreSettings` reads these environment variables. `.env.example` shows each
+one with its default.
+
+| Variable | Default |
+|---|---|
+| `HCO_DATABASE_URL` | `postgresql+psycopg://hco:hco@localhost:5432/hco` |
+| `HCO_LOG_LEVEL` | `INFO` |
+| `HCO_LOG_FORMAT` | `json` (or `console`) |
+| `HCO_SOT` | `yaml` |
+| `HCO_SOT_PATH` | `inventory.yaml` |
+| `HCO_CONNECTION` | `mock` |
+| `HCO_TRANSCRIPTS_DIR` | `transcripts` |
+| `HCO_API_URL` | `http://localhost:8080` |
+| `HCO_ACTOR` | not set |
+| `HCO_VALIDATION_KEY` | not set |
+
+- A `postgresql://` URL gets the psycopg dialect, `postgresql+psycopg://`.
+- `HCO_DATABASE_URL` and `HCO_VALIDATION_KEY` are secret. A printed settings
+  object and a settings error do not show them.
+- `hco_core.logging.configure_logging(settings)` sends structlog and
+  standard-library log lines to stdout, as JSON or for a console.
+
+## Approvals
+
+`hco_core.services.approval.ApprovalService` records approvals for each
+surface, such as the API or the CLI. A surface does not write the approval
+rows itself.
+
+- `upsert_request()` opens one request for each change set. It copies the
+  requester from `change_set.requested_by`. A second call returns the same
+  request and never changes the requester.
+- `decide()` records one decision. It refuses the requester with
+  `RequesterMayNotApproveError` and a second decision by the same person with
+  `DuplicateDecisionError`. Each decision writes one `audit_event` row.
+- One rejection rejects the request. The approvals close it when they reach
+  the count of the risk tier in `hco_core.policy.tiers.APPROVALS_BY_TIER`:
+  one for `LOW` and `MEDIUM`, two for `HIGH` and `CRITICAL`.
+- When a decision closes the request, `decide()` calls the `resume` callback
+  one time. Phase 1 does not check roles.
+- `cancel()` closes a pending request with no decision, writes one
+  `audit_event` row, and calls the `resume` callback one time with no
+  decision. Any valid actor can cancel, also the requester, because a cancel
+  only stops a change. A cancel also closes a pending request past its
+  expiry, because Phase 1 has no expiry sweep.
+- The service also refuses with these typed errors:
+  - `InvalidActorError`: a name is empty, has white space at an end, or has
+    a control or invisible character.
+  - `ApprovalClosedError`: the request is not pending, or it expired.
+  - `QuorumMismatchError`: a later `upsert_request()` asks for more approvals
+    than the open request needs. The count of an open request cannot go up.
+  - `NaiveExpiryError`: `expires_at` has no time zone.
+
+## Runs and notifications
+
+`hco_core.services` also owns the other writes of a run.
+
+- `RunRepository` creates and updates change sets, runs, and config
+  snapshots. Each state change writes one `audit_event` row.
+- `NotificationLedger.deliver()` sends a message one time for each run,
+  channel, and purpose. A later call updates the message. If a send failed,
+  the ledger does not send it again.
+
+## The review graph
+
+`hco_core.graphs.review` holds the LangGraph graph of one run. No node calls a
+model. Compile a graph with a checkpointer, and start it with `start_run()`.
+
+1. `collect_running` reads the device of the run from the source of truth, with
+   the id and the platform of the `device` row. It reads the intended config
+   and the running config, and stores both snapshots.
+2. `build_remediation` builds the remediation, the rollback, and the future
+   config, with the plugins and the tag rules of `ReviewDeps`. It stores the
+   future snapshot, and puts the config-derived facts in
+   `evidence["config_derived"]`.
+3. The convergence gate sends a remediation with an unresolved negation to
+   `blocked`. Nothing after the gate runs then. An unresolved negation is a
+   `no` line that matches nothing in the running config, so the change does
+   not do what it says. The run error names each such line.
+
+Any error from the source of truth, the device, the engine, or a plugin also
+ends the run in `BLOCKED`, with the error in `remediation_run.error`. A device
+that is not the device of the run, and a config with a NUL character, do the
+same. The graph input is `run_id`. A run past `COLLECTING` does not start
+again, and a node that runs again writes no second row.
+`build_collect_graph()` ends a run that passes the gate. `add_collect_nodes()`
+sends it to a node that you name.
+
+This example runs a run to the gate with the YAML source of truth and the mock
+driver. It reads `HCO_DATABASE_URL`. No service writes the `device` row yet, so
+the example adds it directly.
+
+```python
+import asyncio
+import tempfile
+from pathlib import Path
+
+from langgraph.checkpoint.memory import InMemorySaver
+
+from hco_core.adapters.conn.mock import MockConnectionDriver
+from hco_core.adapters.secrets.env import EnvSecretsProvider
+from hco_core.adapters.sot.yaml_file import YamlSourceOfTruth
+from hco_core.db import models
+from hco_core.db.migrate import upgrade
+from hco_core.db.session import create_database_engine, create_sessionmaker
+from hco_core.db.types import new_id
+from hco_core.graphs.review import ReviewDeps, build_collect_graph, start_run
+from hco_core.services.audit import Actor
+from hco_core.services.runs import RunRepository
+from hco_core.settings import CoreSettings
+
+folder = Path(tempfile.mkdtemp())
+(folder / "inventory.yaml").write_text(
+    "devices:\n"
+    "  - {id: edge-1, name: edge-1, platform_name: CISCO_IOS,\n"
+    "     mgmt_address: 10.0.0.1, intended_config: intended.txt}\n"
+)
+(folder / "intended.txt").write_text("hostname edge-1\nntp server 192.0.2.10\n")
+(folder / "transcripts" / "edge-1").mkdir(parents=True)
+(folder / "transcripts" / "edge-1" / "running.txt").write_text("hostname edge-1\n")
+
+settings = CoreSettings()
+upgrade(settings)
+
+
+async def review_to_the_gate() -> str:
+    engine = create_database_engine(settings)
+    sessions = create_sessionmaker(engine)
+    device_id = new_id()
+    async with sessions.begin() as session:
+        session.add(
+            models.Device(
+                id=device_id,
+                sot_name="yaml",
+                sot_device_id="edge-1",
+                name="edge-1",
+                platform_name="CISCO_IOS",
+                mgmt_address="10.0.0.1",
+            )
+        )
+    runs = RunRepository(sessions)
+    alice = Actor("alice", "user", "cli")
+    change_set_id = await runs.create_change_set("Add an NTP server", alice)
+    run_id = await runs.create_run(change_set_id, device_id, "thread-1", alice)
+    deps = ReviewDeps(
+        sot=YamlSourceOfTruth(folder / "inventory.yaml"),
+        secrets=EnvSecretsProvider(
+            {"HCO_SECRET_EDGE_1_USERNAME": "admin", "HCO_SECRET_EDGE_1_PASSWORD": "x"}
+        ),
+        connection=MockConnectionDriver(folder / "transcripts", token_key=b"k" * 32),
+        runs=runs,
+    )
+    graph = build_collect_graph(deps).compile(checkpointer=InMemorySaver())
+    await start_run(graph, {"run_id": run_id}, "thread-1")
+    state = (await runs.get_run(run_id)).state
+    await engine.dispose()
+    return state
+
+
+assert asyncio.run(review_to_the_gate()) == "REMEDIATING"
+```
+
+`build_review_graph(deps, *, assessment=None)` adds the approval step after
+the gate. Its `deps` is an `ApprovalDeps`, which also holds the approval
+service, the notification ledger, and the channel names. Its input needs
+`run_id`, `change_set_id`, and `requested_by`. The first node checks the three
+keys before it writes anything:
+
+4. `evaluate_policy` sets the final risk tier. The tier is never below the
+   floor. With no assessment, the tier is `HIGH` and `unknowns` holds
+   `no risk assessment`.
+5. `notify_pending` sends one message on each channel.
+6. `request_approval` opens the approval request and parks the run at its one
+   `interrupt()`. Resume it with `Command(resume={"decision", "actor",
+   "comment"})`.
+7. `record_decision` reads the approval request from the database. The run is
+   `APPROVED` or `REJECTED` only when the request is closed that way and the
+   resume payload names the same decision. In every other case the run ends
+   in `BLOCKED` with the reason. `notify_decided` sends one more message, with
+   the decisions of the request.
+
+A run that left the review before a node writes, for example an expired run,
+keeps its state, and no message goes out for it.
+
+An assessment layer adds its nodes with the `assessment` hook. The hook returns
+the names of its first and last node. A hook node must catch its own errors
+and write each one into `errors` under its own node name. A later node cannot
+lower `risk_tier_floor` or `risk_tier_final`. An empty value or `None` keeps
+the tier, and a name that is not a tier ends the run in `BLOCKED`.
+
+This example parks a run for approval, records two approvals, and resumes the
+run from the `resume` callback of `ApprovalService`. It reads
+`HCO_DATABASE_URL`, and it adds the `device` row directly.
+
+```python
+import asyncio
+import tempfile
+from pathlib import Path
+
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
+
+from hco_core.adapters.conn.mock import MockConnectionDriver
+from hco_core.adapters.notify.log import LogChannel
+from hco_core.adapters.secrets.env import EnvSecretsProvider
+from hco_core.adapters.sot.yaml_file import YamlSourceOfTruth
+from hco_core.db import models
+from hco_core.db.migrate import upgrade
+from hco_core.db.session import create_database_engine, create_sessionmaker
+from hco_core.db.types import new_id
+from hco_core.domain.approval import ApprovalDecision, ApprovalRequest, Decision
+from hco_core.graphs.review import ApprovalDeps, build_review_graph, start_run
+from hco_core.services.approval import ApprovalService
+from hco_core.services.audit import Actor
+from hco_core.services.ledger import NotificationLedger
+from hco_core.services.runs import RunRepository
+from hco_core.settings import CoreSettings
+
+folder = Path(tempfile.mkdtemp())
+(folder / "inventory.yaml").write_text(
+    "devices:\n"
+    "  - {id: edge-1, name: edge-1, platform_name: CISCO_IOS,\n"
+    "     mgmt_address: 10.0.0.1, intended_config: intended.txt}\n"
+)
+(folder / "intended.txt").write_text("hostname edge-1\nntp server 192.0.2.10\n")
+(folder / "transcripts" / "edge-1").mkdir(parents=True)
+(folder / "transcripts" / "edge-1" / "running.txt").write_text("hostname edge-1\n")
+
+settings = CoreSettings()
+upgrade(settings)
+config = {"configurable": {"thread_id": "thread-1"}}
+
+
+async def review_to_approval() -> str:
+    engine = create_database_engine(settings)
+    sessions = create_sessionmaker(engine)
+    device_id = new_id()
+    async with sessions.begin() as session:
+        session.add(
+            models.Device(
+                id=device_id,
+                sot_name="yaml",
+                sot_device_id="edge-1",
+                name="edge-1",
+                platform_name="CISCO_IOS",
+                mgmt_address="10.0.0.1",
+            )
+        )
+
+    async def resume(request: ApprovalRequest, decision: ApprovalDecision) -> None:
+        payload = {
+            "decision": decision.decision.value,
+            "actor": decision.actor,
+            "comment": decision.comment,
+        }
+        await graph.ainvoke(Command(resume=payload), config, durability="sync")
+
+    runs = RunRepository(sessions)
+    approvals = ApprovalService(sessions, resume=resume)
+    deps = ApprovalDeps(
+        sot=YamlSourceOfTruth(folder / "inventory.yaml"),
+        secrets=EnvSecretsProvider(
+            {"HCO_SECRET_EDGE_1_USERNAME": "admin", "HCO_SECRET_EDGE_1_PASSWORD": "x"}
+        ),
+        connection=MockConnectionDriver(folder / "transcripts", token_key=b"k" * 32),
+        runs=runs,
+        approvals=approvals,
+        ledger=NotificationLedger(sessions, {"log": LogChannel()}),
+    )
+    graph = build_review_graph(deps).compile(checkpointer=InMemorySaver())
+    alice = Actor("alice", "user", "cli")
+    change_set_id = await runs.create_change_set("Add an NTP server", alice)
+    run_id = await runs.create_run(change_set_id, device_id, "thread-1", alice)
+    state = {"run_id": run_id, "change_set_id": change_set_id, "requested_by": "alice"}
+    await start_run(graph, state, "thread-1")
+    (pause,) = (await graph.aget_state(config)).interrupts
+    request_id = pause.value["request_id"]
+    await approvals.decide(request_id, "bob", Decision.APPROVE, "cli")
+    await approvals.decide(request_id, "carol", Decision.APPROVE, "cli")
+    final = (await runs.get_run(run_id)).state
+    await engine.dispose()
+    return final
+
+
+assert asyncio.run(review_to_approval()) == "APPROVED"
+```
+
+### Durable checkpoints and resume
+
+A run can wait days for a person. `open_checkpointer(settings)` gives an
+`AsyncPostgresSaver` on its own connection, so a parked run survives a restart.
+Compile the review graph with this saver in production. Use `InMemorySaver`
+only in tests.
+
+- The saver keeps its four tables (`hco_core.db.models.CHECKPOINT_TABLES`) in
+  schema `hco`. The Alembic chain does not own them.
+- Run `upgrade(settings)` first, because it makes schema `hco`. Then run
+  `setup_checkpointer(settings)` one time, as the deploy step. The setup is
+  safe to run again.
+- `open_checkpointer` makes no table. The runtime role needs only `USAGE` on
+  schema `hco` and `SELECT`, `INSERT`, `UPDATE`, and `DELETE` on its tables.
+- The saver connection adds `-c search_path=hco` after the `options` of
+  `HCO_DATABASE_URL`, so a setting such as `statement_timeout` stays. A URL that
+  does not parse gives `InvalidDatabaseUrlError`, which does not show the URL.
+- `RunResumer(runs, graph, settings, approvals=...).resume(run_id, decision)`
+  is the only way a parked run continues. It reads the thread of the run,
+  opens a new saver, compiles a new graph, and resumes with
+  `Command(resume=...)` and `durability="sync"`. A thread with no pending
+  interrupt gives `NotParkedError`, and nothing is written.
+- `resume` refuses a run whose approval request is still pending with
+  `RequestPendingError`, and the run stays parked. The payload never
+  approves: `record_decision` reads the closed request from the database.
+- `review_with_resume(settings, sessions, review)` builds the review
+  dependencies with an approval service whose `resume` callback is
+  `RunResumer.resume_closed`. Each closed request resumes its run one time.
+  After a cancel, a parked run ends in `BLOCKED`, and a run that is not
+  parked keeps its state.
+
+```python
+import asyncio
+
+from hco_core.db.migrate import upgrade
+from hco_core.graphs.checkpointer import open_checkpointer, setup_checkpointer
+from hco_core.settings import CoreSettings
+
+settings = CoreSettings()
+upgrade(settings)
+asyncio.run(setup_checkpointer(settings))
+
+
+async def latest_checkpoint() -> object:
+    async with open_checkpointer(settings) as saver:
+        return await saver.aget_tuple({"configurable": {"thread_id": "no-run"}})
+
+
+assert asyncio.run(latest_checkpoint()) is None
+```
+
+### One interrupt in each node
+
+A resumed node runs again from the top. A node with a second `interrupt()`, or
+with an `interrupt()` that only some runs reach, asks the person a different
+question on each run. The `interrupts` lint rule stops this in CI:
+
+```bash
+poetry run python -m hco_core.lint.interrupts hco_core
+```
+
+The command prints each violation as `path:line: function: reason` and exits 1.
+It fails on these:
+
+- A second `interrupt()` in one function.
+- An `interrupt()` inside `if`, `for`, `while`, `try`, `with`, `match`,
+  `assert`, a conditional expression, a boolean operator, a comprehension, or a
+  lambda.
+- An `interrupt()` outside a function body, for example in a decorator or a
+  default argument.
+- A `return`, `raise`, `break`, or `continue` inside one of these constructs
+  above the `interrupt()`.
+
+Calls above the `interrupt()` are permitted, so make each one idempotent. The
+rule does not follow a local alias such as `ask = interrupt`, or `getattr`.
+
+## The REST API
+
+`hco_core.api.app.create_app(settings, deps)` builds the FastAPI app. No route
+writes to a device. A run stops at `AWAITING_APPROVAL` until its approval
+request closes.
+
+| Route | Does |
+|---|---|
+| `GET /health` | 200 when the database answers, 503 when it does not. |
+| `POST /api/v1/devices/sync` | Writes each device of `HCO_SOT` to the `device` table. A second sync updates the rows. |
+| `GET /api/v1/devices`, `/{id}` | Lists the devices, or shows one by its row id or its source of truth id. |
+| `POST /api/v1/runs` | Creates a run on one device and returns 202. The review graph runs after the response. |
+| `GET /api/v1/runs`, `/{id}` | Lists the runs, newest first, or shows one with its state, tiers, and errors. |
+| `GET /api/v1/runs/{id}/diff` | Shows the remediation, the rollback, and the future config as lines. |
+| `GET /api/v1/approvals`, `/{id}` | Lists the pending approval requests, newest first, or shows one with its decisions and its run state. |
+| `POST /api/v1/approvals/{id}/decide` | Records the decision of the actor. A decision that closes the request resumes the run. |
+| `POST /api/v1/approvals/{id}/cancel` | Closes the request with no decision. A parked run ends in `BLOCKED`. |
+
+- A list returns `items` and `next_cursor`. Send `?cursor=<next_cursor>` for the
+  next page, and `?limit=` for the page size (1 to 500).
+- An error is an RFC 9457 `application/problem+json` document with a stable
+  `type`, such as `urn:hco-core:problem:device-not-found`. It never shows a
+  config text, a `metadata` value, or a database URL. A run error shows a URL
+  with no user information, an absolute path as its base name only, and 500
+  characters or fewer.
+- A request that changes data needs the `X-HCO-Actor` header. Without it, the
+  API returns 401. Send the name as UTF-8. The API stores its NFKC form, and
+  the name follows the rule of `ApprovalService`.
+- `GET /openapi.json` gives the OpenAPI schema. The API serves no HTML page.
+- A sync writes the devices in chunks of 1000 rows, in one transaction.
+- A sync adds and updates devices. It does not remove a device that is no
+  longer in the inventory.
+- A 503 names the setting to check, `HCO_SOT_PATH` or `HCO_DATABASE_URL`. The
+  server log line `request_failed` gives the `cause` and the `reason`.
+
+WARNING: Any client can send any name in `X-HCO-Actor`. It is a development
+identity for Phase 1. Do not expose the API on a shared network. Phase 3
+replaces the header with OIDC.
+
+Start the API on port 8080. It reads the `HCO_` variables, and
+`HCO_VALIDATION_KEY` is necessary:
+
+```bash
+export HCO_SOT_PATH=inventory.yaml HCO_TRANSCRIPTS_DIR=transcripts
+export HCO_VALIDATION_KEY=$(python -c "import secrets; print(secrets.token_hex(32))")
+poetry run uvicorn --factory hco_core.api.app:app_from_env --port 8080
+```
+
+Read the inventory, and show a device:
+
+```bash
+curl -s -X POST -H 'X-HCO-Actor: alice' localhost:8080/api/v1/devices/sync
+curl -s 'localhost:8080/api/v1/devices?limit=10'
+curl -s localhost:8080/api/v1/devices/r1
+```
+
+Start a run, and read its state and its diff:
+
+```bash
+curl -s -X POST -H 'X-HCO-Actor: alice' -H 'Content-Type: application/json' \
+  -d '{"device_id": "r1"}' localhost:8080/api/v1/runs
+curl -s localhost:8080/api/v1/runs/<run_id>
+curl -s localhost:8080/api/v1/runs/<run_id>/diff
+```
+
+With no assessment layer, the run parks at `AWAITING_APPROVAL` with the tier
+`HIGH`, and `unknowns` gives the reason:
+
+```json
+{"state": "AWAITING_APPROVAL", "risk_tier_final": "HIGH", "unknowns": ["no risk assessment"]}
+```
+
+`unknowns` is `null` when the run has no checkpoint yet. A review that fails to
+start ends in `BLOCKED`, with an error that names the server log line
+`run_failed`.
+
+The mock connection reads the running config of device `r1` from
+`transcripts/r1/running.txt`, with the credentials of the `env` provider, for
+example `HCO_SECRET_R1_USERNAME` and `HCO_SECRET_R1_PASSWORD`. If the process
+stops before a run parks, the run stays in its last state. Phase 1 does not
+continue it.
+
+### Approvals through the API
+
+`POST /api/v1/approvals/{id}/decide` is the one place where the API approves a
+change. The route calls `ApprovalService.decide()` with the surface `api` and
+the actor in `X-HCO-Actor`. The API never sets a run state. When a decision
+closes the request, `RunResumer` resumes the parked run one time, after the
+commit. The review graph then reads the closed request and sets the run state.
+
+- The resume runs before the response, so `run_state` in the response is the
+  state after the decision: `AWAITING_APPROVAL`, `APPROVED`, or `REJECTED`.
+- With no assessment layer, the tier is `HIGH`, and the request needs two
+  approvals. One rejection rejects the request.
+- `RunResumer` never resumes a run whose request is still pending. Two
+  decisions at the same time lock the request row one after the other, so
+  only one of them closes the request, and the run resumes one time.
+- A cancel closes the request with no decision. A parked run then ends in
+  `BLOCKED`. Any actor can cancel in Phase 1.
+
+| Problem `type` suffix | Status | When |
+|---|---|---|
+| `requester-may-not-approve` | 403 | The requester decides on their own change. |
+| `duplicate-decision` | 409 | The actor already decided on the request. |
+| `approval-closed` | 409 | The request is approved, rejected, cancelled, or expired. |
+| `run-not-awaiting-approval` | 409 | The request is pending, but its run is not parked. Nothing is written. |
+| `run-not-parked` | 409 | The decision closed the request, but the run is not parked. The decision stays recorded. |
+| `approval-pending` | 409 | The resumer found the request still pending. The run stays parked. |
+| `quorum-mismatch` | 409 | A request asks for more approvals than the open request needs. |
+| `approval-not-found` | 404 | No request has the id. |
+
+A 500 or 503 after the request closes also leaves the decision recorded.
+
+The review graph opens the request before the run parks. Until the run is
+`AWAITING_APPROVAL`, the list does not show the request, and a decide or a
+cancel gets `run-not-awaiting-approval`. A run that ended, for example in
+`BLOCKED`, takes no decision, but its pending request can be cancelled.
+
+Find the request of the run, and show it:
+
+```bash
+curl -s localhost:8080/api/v1/approvals
+curl -s localhost:8080/api/v1/approvals/<request_id>
+```
+
+Alice requested the run, so she gets 403. Bob and Carol approve it:
+
+```bash
+curl -s -X POST -H 'X-HCO-Actor: alice' -H 'Content-Type: application/json' \
+  -d '{"decision": "approve"}' localhost:8080/api/v1/approvals/<request_id>/decide
+curl -s -X POST -H 'X-HCO-Actor: bob' -H 'Content-Type: application/json' \
+  -d '{"decision": "approve", "comment": "checked the diff"}' \
+  localhost:8080/api/v1/approvals/<request_id>/decide
+curl -s -X POST -H 'X-HCO-Actor: carol' -H 'Content-Type: application/json' \
+  -d '{"decision": "approve"}' localhost:8080/api/v1/approvals/<request_id>/decide
+curl -s localhost:8080/api/v1/runs/<run_id>
+```
+
+After the second approval, the request is `approved` and the run is
+`APPROVED`:
+
+```json
+{"state": "approved", "required_count": 2, "run_state": "APPROVED"}
+```
+
+To stop a change, cancel its request:
+
+```bash
+curl -s -X POST -H 'X-HCO-Actor: bob' -H 'Content-Type: application/json' \
+  -d '{"comment": "wrong device"}' localhost:8080/api/v1/approvals/<request_id>/cancel
+```
+
+If the process stops after a decision closes the request and before the run
+resumes, the run stays at `AWAITING_APPROVAL`. Phase 1 does not continue it.
+A short gap also stays between the commit of `AWAITING_APPROVAL` and the
+checkpoint of the interrupt. A decision that closes the request in that gap
+gets `run-not-parked`, and the run stays parked on the closed request. The
+run-state reconciler (R4, a later phase) closes both gaps.
+
 ## Requirements
 
 Python 3.12 to 3.14.
 
-This release depends on `pydantic`, `hier-config`, and `pyyaml`. Phase 1 adds
-the remediation engine, the database, the review graph, the REST API, and the
-CLI.
-These parts add runtime dependencies, so the list grows in each Phase 1 release.
+Postgres 16 for the database. Phase 1 adds the review graph, the REST API, and
+the CLI. These parts add runtime dependencies, so the list grows in each Phase 1
+release.
 Read `pyproject.toml` for the current list.
 
 ## Development
@@ -373,6 +920,17 @@ Install the package and the development tools:
 poetry install
 ```
 
+The database tests need Postgres. Start a test container on port 55432:
+
+```bash
+docker run -d --name hco-core-test-pg -e POSTGRES_USER=hco \
+  -e POSTGRES_PASSWORD=hco -e POSTGRES_DB=hco \
+  -p 127.0.0.1:55432:5432 pgvector/pgvector:pg16
+export HCO_DATABASE_URL=postgresql://hco:hco@127.0.0.1:55432/hco
+```
+
+If Postgres is not available, the database tests fail. They do not skip.
+
 Run the gate before you open a pull request. CI runs the same commands:
 
 ```bash
@@ -380,6 +938,7 @@ poetry run ruff format --check .
 poetry run ruff check .
 poetry run mypy hco_core
 poetry run pyright
+poetry run python -m hco_core.lint.interrupts hco_core
 poetry run pytest --cov=hco_core
 ```
 

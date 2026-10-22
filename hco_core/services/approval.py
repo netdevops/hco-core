@@ -1,0 +1,406 @@
+"""Open approval requests and record decisions, whatever surface calls.
+
+The requester never counts. This service refuses the requester with a typed
+error, and the `hco.reject_self_approval()` trigger refuses the same row again.
+The service compares identities: two names with the same NFKC, case-folded form
+are one person. The trigger compares exact names.
+"""
+
+import unicodedata
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
+
+from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from hco_core.db import models
+from hco_core.db.types import new_id
+from hco_core.domain.approval import (
+    ActorKind,
+    ApprovalDecision,
+    ApprovalRequest,
+    ApprovalState,
+    Decision,
+    Surface,
+)
+from hco_core.domain.risk import RiskTier
+from hco_core.policy.tiers import APPROVALS_BY_TIER
+from hco_core.services.audit import Actor, AuditEntry, add_audit_event
+
+DEFAULT_IGNORABLE_RANGES = (
+    (0x00AD, 0x00AD),
+    (0x034F, 0x034F),
+    (0x061C, 0x061C),
+    (0x115F, 0x1160),
+    (0x17B4, 0x17B5),
+    (0x180B, 0x180F),
+    (0x200B, 0x200F),
+    (0x202A, 0x202E),
+    (0x2060, 0x206F),
+    (0x3164, 0x3164),
+    (0xFE00, 0xFE0F),
+    (0xFEFF, 0xFEFF),
+    (0xFFA0, 0xFFA0),
+    (0xFFF0, 0xFFF8),
+    (0x1BCA0, 0x1BCA3),
+    (0x1D173, 0x1D17A),
+    (0xE0000, 0xE0FFF),
+)
+"""The Unicode `Default_Ignorable_Code_Point` ranges. A text shows none of them."""
+
+MAX_ACTOR_LENGTH = 255
+"""The longest actor name. The name columns hold 255 characters."""
+
+type Resume = Callable[[ApprovalRequest, ApprovalDecision | None], Awaitable[None]]
+"""Wake the parked run of a closed request. A cancel gives no decision."""
+
+
+class ApprovalError(Exception):
+    """The base of every refusal of the approval service."""
+
+
+class InvalidActorError(ApprovalError, ValueError):
+    """A name is empty, too long, has white space at an end, or is not visible."""
+
+    def __init__(self, name: str) -> None:
+        super().__init__(
+            f"the name {name!r} is empty, has more than {MAX_ACTOR_LENGTH} "
+            "characters, has white space at an end, or has an invisible or "
+            "control character"
+        )
+
+
+class RequesterMismatchError(ApprovalError, ValueError):
+    """The requester differs from the one that the database holds."""
+
+
+class QuorumMismatchError(ApprovalError, ValueError):
+    """The open request needs fewer approvals than the caller asks for."""
+
+
+class NaiveExpiryError(ApprovalError, ValueError):
+    """The expiry has no time zone."""
+
+
+class ApprovalRequestNotFoundError(ApprovalError, LookupError):
+    """No approval request has the id."""
+
+
+class ApprovalClosedError(ApprovalError):
+    """The request is no longer pending, or it expired."""
+
+
+class RequesterMayNotApproveError(ApprovalError, PermissionError):
+    """The requester tried to decide on their own change."""
+
+
+class DuplicateDecisionError(ApprovalError):
+    """The actor already decided on this request."""
+
+
+class ApprovalService:
+    """The one place that opens approval requests and records decisions."""
+
+    def __init__(
+        self, sessions: async_sessionmaker[AsyncSession], *, resume: Resume
+    ) -> None:
+        self._sessions = sessions
+        self._resume = resume
+
+    async def upsert_request(
+        self,
+        change_set_id: str,
+        tier: RiskTier,
+        required_count: int,
+        requester: str,
+        expires_at: datetime,
+    ) -> ApprovalRequest:
+        """Return the request of the change set, and open it on the first call.
+
+        The count is never below the quorum of the tier. A later call returns
+        the existing request unchanged. The requester must match exactly,
+        because it comes from `change_set.requested_by`.
+
+        Raises:
+            InvalidActorError: If the requester name is not valid.
+            NaiveExpiryError: If `expires_at` has no time zone.
+            RequesterMismatchError: If the requester is not the one that
+                `change_set.requested_by` or the existing request holds.
+            QuorumMismatchError: If the open request needs fewer approvals
+                than this call asks for.
+
+        """
+        if not is_valid_name(requester):
+            raise InvalidActorError(requester)
+        if expires_at.utcoffset() is None:
+            message = f"the expiry {expires_at.isoformat()} has no time zone"
+            raise NaiveExpiryError(message)
+        quorum = max(required_count, APPROVALS_BY_TIER[tier])
+        async with self._sessions.begin() as session:
+            requested_by = await session.scalar(
+                select(models.ChangeSet.requested_by).where(
+                    models.ChangeSet.id == change_set_id
+                )
+            )
+            if requested_by is None:
+                message = f"no change set has the id {change_set_id!r}"
+                raise RequesterMismatchError(message)
+            _check_requester(requester, requested_by)
+            request_id = new_id()
+            await session.execute(
+                insert(models.ApprovalRequest)
+                .values(
+                    id=request_id,
+                    change_set_id=change_set_id,
+                    state=ApprovalState.PENDING,
+                    required_count=quorum,
+                    requester=requester,
+                    expires_at=expires_at,
+                    interrupt_key=request_id,
+                )
+                .on_conflict_do_nothing(index_elements=["change_set_id"])
+            )
+            row = (
+                await session.execute(
+                    select(models.ApprovalRequest).where(
+                        models.ApprovalRequest.change_set_id == change_set_id
+                    )
+                )
+            ).scalar_one()
+            _check_requester(requester, row.requester)
+            if row.required_count < quorum:
+                reason = (
+                    f"risk tier {tier.name} needs {quorum}"
+                    if quorum == APPROVALS_BY_TIER[tier]
+                    else f"this call asks for {quorum}"
+                )
+                approvals = "approval" if row.required_count == 1 else "approvals"
+                message = (
+                    f"approval request {row.id!r} was opened for "
+                    f"{row.required_count} {approvals}; {reason}, and the count "
+                    "of an open request cannot go up"
+                )
+                raise QuorumMismatchError(message)
+            return _to_request(row)
+
+    async def decide(  # ruff: ignore[too-many-arguments]
+        self,
+        request_id: str,
+        actor: str,
+        decision: Decision,
+        surface: Surface,
+        comment: str = "",
+        *,
+        actor_kind: ActorKind = "user",
+    ) -> ApprovalRequest:
+        """Record one decision and close the request when it is decided.
+
+        One rejection rejects. The approvals close the request when they reach
+        `required_count`. The resume callback runs once, after the commit that
+        closes the request. If it raises, the decision stays recorded and the
+        error reaches the caller. An unknown id raises
+        `ApprovalRequestNotFoundError`, and a closed or expired request raises
+        `ApprovalClosedError`.
+
+        Raises:
+            InvalidActorError: If the actor name is not valid.
+            RequesterMayNotApproveError: If the actor is the requester.
+            DuplicateDecisionError: If the actor already decided.
+
+        """
+        if not is_valid_name(actor):
+            raise InvalidActorError(actor)
+        identity = _identity(actor)
+        async with self._sessions.begin() as session:
+            row = await _pending_row(session, request_id)
+            if identity == _identity(row.requester):
+                message = f"requester {actor!r} may not decide on their own change"
+                raise RequesterMayNotApproveError(message)
+            if identity in await _decided_identities(session, request_id):
+                message = f"{actor!r} already decided on request {request_id!r}"
+                raise DuplicateDecisionError(message)
+            decision_row = models.ApprovalDecision(
+                id=new_id(),
+                request_id=request_id,
+                actor=actor,
+                actor_kind=actor_kind,
+                decision=decision,
+                surface=surface,
+                comment=comment,
+            )
+            session.add(decision_row)
+            await session.flush()
+            approvals = await _approvals(session, request_id)
+            before = row.state
+            row.state = _next_state(decision, approvals, row.required_count)
+            add_audit_event(
+                session,
+                AuditEntry(
+                    actor=Actor(actor, actor_kind, surface),
+                    action="approval.decide",
+                    object_type="approval_request",
+                    object_id=request_id,
+                    before={"state": before},
+                    after={
+                        "state": row.state,
+                        "decision": decision.value,
+                        "approvals": approvals,
+                    },
+                ),
+            )
+            request = _to_request(row)
+            recorded = _to_decision(decision_row)
+        if request.state is not ApprovalState.PENDING:
+            await self._resume(request, recorded)
+        return request
+
+    async def cancel(
+        self, request_id: str, actor: str, surface: Surface, comment: str = ""
+    ) -> ApprovalRequest:
+        """Close a pending request with no decision, then call the resume callback once.
+
+        Any valid actor may cancel, the requester also: a cancel only stops a
+        change. Phase 1 has no roles. A pending request past its expiry can
+        also be cancelled, because no sweep closes it in Phase 1. An unknown id
+        raises `ApprovalRequestNotFoundError`, and a closed request raises
+        `ApprovalClosedError`.
+
+        Raises:
+            InvalidActorError: If the actor name is not valid.
+
+        """
+        if not is_valid_name(actor):
+            raise InvalidActorError(actor)
+        async with self._sessions.begin() as session:
+            row = await _pending_row(session, request_id, expired_ok=True)
+            row.state = ApprovalState.CANCELLED
+            add_audit_event(
+                session,
+                AuditEntry(
+                    actor=Actor(actor, "user", surface),
+                    action="approval.cancel",
+                    object_type="approval_request",
+                    object_id=request_id,
+                    before={"state": ApprovalState.PENDING},
+                    after={"state": row.state, "comment": comment},
+                ),
+            )
+            request = _to_request(row)
+        await self._resume(request, None)
+        return request
+
+    async def get_request(
+        self, request_id: str
+    ) -> tuple[ApprovalRequest, tuple[ApprovalDecision, ...]]:
+        """Return the request and its decisions, the oldest first.
+
+        Raises:
+            ApprovalRequestNotFoundError: If no request has the id.
+
+        """
+        async with self._sessions() as session:
+            row = await session.get(models.ApprovalRequest, request_id)
+            if row is None:
+                message = f"no approval request has the id {request_id!r}"
+                raise ApprovalRequestNotFoundError(message)
+            decisions = await session.scalars(
+                select(models.ApprovalDecision)
+                .where(models.ApprovalDecision.request_id == request_id)
+                .order_by(
+                    models.ApprovalDecision.created_at, models.ApprovalDecision.id
+                )
+            )
+            return _to_request(row), tuple(_to_decision(item) for item in decisions)
+
+
+def is_valid_name(name: str) -> bool:
+    """Return True if the name is a valid actor name: printable, trimmed, and visible."""
+    return (
+        0 < len(name) <= MAX_ACTOR_LENGTH
+        and name == name.strip()
+        and name.isprintable()
+        and not any(_is_default_ignorable(character) for character in name)
+    )
+
+
+def _is_default_ignorable(character: str) -> bool:
+    code = ord(character)
+    return any(start <= code <= end for start, end in DEFAULT_IGNORABLE_RANGES)
+
+
+def _identity(name: str) -> str:
+    return unicodedata.normalize("NFKC", name).casefold()
+
+
+def _check_requester(requester: str, recorded: str) -> None:
+    if requester != recorded:
+        message = (
+            f"the requester {requester!r} is not the recorded requester {recorded!r}"
+        )
+        raise RequesterMismatchError(message)
+
+
+async def _pending_row(
+    session: AsyncSession, request_id: str, *, expired_ok: bool = False
+) -> models.ApprovalRequest:
+    """Lock the request row, and return it when it is pending.
+
+    With `expired_ok`, a pending request past its expiry is also returned.
+
+    Raises:
+        ApprovalRequestNotFoundError: If no request has the id.
+        ApprovalClosedError: If the request is not pending, or expired.
+
+    """
+    row = await session.get(models.ApprovalRequest, request_id, with_for_update=True)
+    if row is None:
+        message = f"no approval request has the id {request_id!r}"
+        raise ApprovalRequestNotFoundError(message)
+    closed = _closed_reason(row, expired_ok=expired_ok)
+    if closed:
+        raise ApprovalClosedError(closed)
+    return row
+
+
+def _closed_reason(row: models.ApprovalRequest, *, expired_ok: bool = False) -> str:
+    if row.state != ApprovalState.PENDING:
+        return f"approval request {row.id!r} is {row.state}"
+    if not expired_ok and row.expires_at <= datetime.now(UTC):
+        return f"approval request {row.id!r} expired at {row.expires_at.isoformat()}"
+    return ""
+
+
+async def _decided_identities(session: AsyncSession, request_id: str) -> set[str]:
+    actors = await session.scalars(
+        select(models.ApprovalDecision.actor).where(
+            models.ApprovalDecision.request_id == request_id
+        )
+    )
+    return {_identity(actor) for actor in actors}
+
+
+async def _approvals(session: AsyncSession, request_id: str) -> int:
+    count = await session.scalar(
+        select(func.count()).where(
+            models.ApprovalDecision.request_id == request_id,
+            models.ApprovalDecision.decision == Decision.APPROVE,
+        )
+    )
+    return count or 0
+
+
+def _next_state(decision: Decision, approvals: int, required_count: int) -> str:
+    if decision is Decision.REJECT:
+        return ApprovalState.REJECTED
+    if approvals >= required_count:
+        return ApprovalState.APPROVED
+    return ApprovalState.PENDING
+
+
+def _to_request(row: models.ApprovalRequest) -> ApprovalRequest:
+    return ApprovalRequest.model_validate(row, from_attributes=True)
+
+
+def _to_decision(row: models.ApprovalDecision) -> ApprovalDecision:
+    return ApprovalDecision.model_validate(row, from_attributes=True)

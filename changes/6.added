@@ -1,0 +1,3 @@
+Added the Postgres schema for devices, snapshots, runs, approvals, audit, and notifications. A database trigger refuses an approval by the requester.
+Added hco_core.db.migrate.upgrade(), which makes or upgrades the schema hco in the database that HCO_DATABASE_URL names.
+Added HCO_ settings for the database, logging, inventory, connection, API, actor, and validation key. .env.example lists each one.

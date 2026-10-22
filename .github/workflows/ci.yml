@@ -15,6 +15,22 @@ jobs:
         # 3.14 runs but is not required: scrapli, which downstream consumers
         # need, does not yet declare it. Promote when it does.
         python-version: ["3.12", "3.13"]
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: hco
+          POSTGRES_PASSWORD: hco
+          POSTGRES_DB: hco
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hco -d hco"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      HCO_DATABASE_URL: postgresql://hco:hco@localhost:5432/hco
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -29,6 +45,8 @@ jobs:
       - run: poetry run ruff check --output-format=concise .
       - run: poetry run mypy hco_core
       - run: poetry run pyright
+      - name: Allow one unconditional interrupt() in each graph node
+        run: poetry run python -m hco_core.lint.interrupts hco_core
       - run: poetry run pytest -q --cov=hco_core --cov-report=term-missing --cov-fail-under=95
       - name: Hold the validation gate at 100% line and branch coverage
         run: poetry run pytest -q tests/engine/test_validation.py --cov=hco_core.engine.validation --cov-branch --cov-report=term-missing --cov-fail-under=100
@@ -39,6 +57,22 @@ jobs:
   smoke-3-14-advisory:
     runs-on: ubuntu-latest
     continue-on-error: true
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: hco
+          POSTGRES_PASSWORD: hco
+          POSTGRES_DB: hco
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hco -d hco"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      HCO_DATABASE_URL: postgresql://hco:hco@localhost:5432/hco
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -55,6 +89,8 @@ jobs:
       - run: poetry run ruff check --output-format=concise .
       - run: poetry run mypy hco_core
       - run: poetry run pyright
+      - name: Allow one unconditional interrupt() in each graph node
+        run: poetry run python -m hco_core.lint.interrupts hco_core
       - run: poetry run pytest -q --cov=hco_core --cov-report=term-missing --cov-fail-under=95
       - name: Hold the validation gate at 100% line and branch coverage
         run: poetry run pytest -q tests/engine/test_validation.py --cov=hco_core.engine.validation --cov-branch --cov-report=term-missing --cov-fail-under=100

@@ -1,0 +1,2 @@
+Added a notification ledger that sends each run notification once and updates the message when a step runs again.
+Added the log notification channel, with the name log, which writes each notification to the application log.

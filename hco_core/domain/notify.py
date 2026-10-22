@@ -21,6 +21,10 @@ class Notification(BaseModel):
 
     title: str
     body: str
+    """HCO's own text, such as the device name, the run id, and the tier.
+
+    Never device output or configuration text. A channel can write it to a log.
+    """
     severity: str = "info"
     run_id: str | None = None
     actions: tuple[str, ...] = ()

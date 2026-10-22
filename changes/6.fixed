@@ -1,0 +1,1 @@
+Fixed canonical_platform_name so that a Platform member gives its name, such as CISCO_IOS, and never its positional value.

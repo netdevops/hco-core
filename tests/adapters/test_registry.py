@@ -6,7 +6,12 @@ import pytest
 
 from hco_core.adapters import registry
 from hco_core.adapters.errors import AdapterConfigError
-from hco_core.ports import ConnectionDriver, SecretsProvider, SourceOfTruth
+from hco_core.ports import (
+    ConnectionDriver,
+    NotificationChannel,
+    SecretsProvider,
+    SourceOfTruth,
+)
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 KEY = b"k" * 32
@@ -21,6 +26,7 @@ def test_each_built_in_name_builds_its_adapter() -> None:
         registry.connection("mock", options, token_key=KEY), ConnectionDriver
     )
     assert isinstance(registry.secrets("env", {}), SecretsProvider)
+    assert isinstance(registry.notification_channel("log", {}), NotificationChannel)
 
 
 def test_an_unknown_name_lists_the_known_names() -> None:
@@ -31,6 +37,8 @@ def test_an_unknown_name_lists_the_known_names() -> None:
         registry.connection("scrapli", {}, token_key=KEY)
     with pytest.raises(AdapterConfigError, match=r"secrets.*env"):
         registry.secrets("vault", {})
+    with pytest.raises(AdapterConfigError, match=r"notify.*log"):
+        registry.notification_channel("slack", {})
 
 
 def test_a_missing_option_is_named() -> None:
