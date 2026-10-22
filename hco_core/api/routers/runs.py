@@ -40,8 +40,9 @@ if TYPE_CHECKING:
 
 MAX_ERRORS: Final = 20
 MAX_ERROR_CHARACTERS: Final = 500
-_URL_CREDENTIALS: Final = re.compile(r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)\S*@")
-"""A URL with user information, up to the last `@` before white space."""
+MAX_SCRUB_CHARACTERS: Final = 4 * MAX_ERROR_CHARACTERS
+"""The part of an error that the scrub reads. Device text can be large and hostile."""
+_WHITE_SPACE: Final = re.compile(r"(\s+)")
 _ABSOLUTE_PATH: Final = re.compile(r"(?<![\w/:.~@-])(?:/[^\s/'\"]+)+/?")
 """An absolute path that is not a part of a URL."""
 START_ERROR: Final = (
@@ -316,8 +317,30 @@ def run_errors(error: models.JSONObject | None) -> tuple[str, ...]:
 
 
 def _safe(text: str) -> str:
-    without_credentials = _URL_CREDENTIALS.sub(r"\g<scheme>***@", text)
+    tokens = _WHITE_SPACE.split(_bounded(text))
+    without_credentials = "".join(_without_user(token) for token in tokens)
     return _ABSOLUTE_PATH.sub(_base_name, without_credentials)
+
+
+def _bounded(text: str) -> str:
+    """Cut the text to `MAX_SCRUB_CHARACTERS`.
+
+    A URL that the cut splits is dropped, because its `@` can be after the cut.
+    """
+    if len(text) <= MAX_SCRUB_CHARACTERS:
+        return text
+    tokens = _WHITE_SPACE.split(text[:MAX_SCRUB_CHARACTERS])
+    split = tokens.pop()
+    return "".join(tokens) + ("" if "://" in split else split)
+
+
+def _without_user(token: str) -> str:
+    """Drop the user information of a URL: all up to the last `@` of the token."""
+    scheme_end = token.find("://") + len("://")
+    at = token.rfind("@")
+    if scheme_end < len("://") or at < scheme_end:
+        return token
+    return f"{token[:scheme_end]}***{token[at:]}"
 
 
 def _base_name(match: re.Match[str]) -> str:

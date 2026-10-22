@@ -1,6 +1,7 @@
 """The run routes: create a run that parks for approval, list, show, and diff."""
 
 import asyncio
+import time
 from dataclasses import replace
 from http import HTTPStatus
 
@@ -11,7 +12,12 @@ from structlog.testing import capture_logs
 
 from hco_core.api.app import create_app
 from hco_core.api.errors import PROBLEM_JSON
-from hco_core.api.routers.runs import MAX_ERROR_CHARACTERS, START_ERROR, run_errors
+from hco_core.api.routers.runs import (
+    MAX_ERROR_CHARACTERS,
+    MAX_ERRORS,
+    START_ERROR,
+    run_errors,
+)
 from hco_core.db.session import create_database_engine, create_sessionmaker
 from hco_core.domain.approval import RunState
 from hco_core.services.audit import Actor
@@ -245,6 +251,7 @@ def test_a_run_that_cannot_be_blocked_keeps_its_state_and_logs_it(
 
 
 URL_IN_ERROR = "postgresql://hco:s3cret@db/hco"
+HOSTILE_SECONDS = 0.05
 
 
 @pytest.mark.parametrize(
@@ -262,8 +269,21 @@ URL_IN_ERROR = "postgresql://hco:s3cret@db/hco"
             "intended.txt is outside /srv/hco/inventory, see '/srv/hco/x.txt'",
             "intended.txt is outside .../inventory, see '.../x.txt'",
         ),
+        ("(postgresql://hco:pw@db/hco)", "(postgresql://***@db/hco)"),
+        ("'postgresql://hco:pw@db/hco'", "'postgresql://***@db/hco'"),
+        ("x://a:b@h,y://c:d@k", "x://***@k"),
     ],
-    ids=["slash", "at", "colon", "no-user", "two-urls", "paths"],
+    ids=[
+        "slash",
+        "at",
+        "colon",
+        "no-user",
+        "two-urls",
+        "paths",
+        "parentheses",
+        "quotes",
+        "two-in-one-token",
+    ],
 )
 def test_a_run_error_shows_no_credential_and_no_absolute_path(
     error: str, shown: str
@@ -361,3 +381,28 @@ def test_an_unreadable_checkpoint_gives_no_unknowns_and_a_log_line(api: Api) -> 
         "run_id": run_id,
         "error": "OperationalError",
     } in lines
+
+
+def test_a_hostile_error_of_one_megabyte_is_scrubbed_in_linear_time() -> None:
+    """Device text is untrusted, so the scrub must not stall the event loop."""
+    hostile = "banner motd ^C " + "a://" * 250_000
+    started = time.perf_counter()
+
+    shown = run_errors({"errors": [hostile] * MAX_ERRORS})
+
+    assert time.perf_counter() - started < HOSTILE_SECONDS
+    assert all(len(item) <= MAX_ERROR_CHARACTERS for item in shown)
+
+
+def test_a_url_cut_at_the_bound_shows_no_part_of_its_credentials() -> None:
+    """A URL that the input bound cuts in its user information is not shown."""
+    error = (
+        "x " * (MAX_ERROR_CHARACTERS * 2 - 10)
+        + "postgresql://hco:"
+        + "s" * 5000
+        + "@db"
+    )
+
+    shown = run_errors({"errors": [error]})
+
+    assert "hco:" not in shown[0]
