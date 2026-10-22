@@ -956,12 +956,25 @@ except `db upgrade`, and it never writes to a device.
 
 - A command that changes data sends your user name in `X-HCO-Actor`. Give it
   with `--as <name>`, or set `HCO_ACTOR`.
+- `approve`, `reject`, and `cancel` take the approval request id.
+  `approval list` shows the run of each request.
 - A list shows a table. `--limit` and `--cursor` move through the pages.
 - `--json` prints the answer of the API as JSON. `run diff --json` also gives
   the future config.
 - An error is one sentence on stderr, and the exit code is 1. With `--json`,
   stdout also gets the problem document. A message never shows a password
   from `HCO_API_URL` or `HCO_DATABASE_URL`.
+
+With the API from "The REST API" on port 8080, Alice requests a run, and Bob
+and Carol approve it:
+
+```bash
+poetry run hco-core device sync --as alice
+poetry run hco-core run create --device r1 --as alice
+poetry run hco-core approval list
+poetry run hco-core approve <request_id> --as bob
+poetry run hco-core approve <request_id> --as carol
+```
 
 ## Requirements
 
