@@ -56,7 +56,7 @@ PARKED_STATES: Final = frozenset({RunState.AWAITING_APPROVAL, RunState.APPROVED}
 """The states in which `run create` exits 0."""
 EXIT_FAILED: Final = 1
 EXIT_USAGE: Final = 2
-EXIT_STILL_WORKING: Final = 2
+EXIT_STILL_WORKING: Final = 3
 
 app = typer.Typer(
     name="hco-core",
@@ -130,10 +130,11 @@ def run_create(  # ruff: ignore[too-many-arguments]
     """Start a review of the device. The run parks for approval, or it ends BLOCKED.
 
     The exit code is 0 when the run is AWAITING_APPROVAL or APPROVED, 1 when it
-    ends in a different state or on an error, and 2 when the wait times out.
+    ends in a different state or on an error, 2 for a bad option or user
+    name, and 3 when the wait times out.
 
     Raises:
-        typer.Exit: With exit code 1 or 2, when the run is not parked.
+        typer.Exit: With exit code 1 or 3, when the run is not parked.
 
     """
     if math.isnan(timeout):
@@ -502,7 +503,9 @@ def _outcome(run: RunDetail, timeout: float) -> str:
             f"{found} Risk tier: {run.risk_tier_final}. "
             "Find its approval request with: hco-core approval list"
         )
-    return f"{found} Show the errors with: hco-core run show {run.id}"
+    if run.state is RunState.BLOCKED:
+        return f"{found} Show the errors with: hco-core run show {run.id}"
+    return f"{found} Show it with: hco-core run show {run.id}"
 
 
 def _request_outcome(detail: ApprovalDetail) -> str:
