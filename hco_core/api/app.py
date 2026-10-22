@@ -16,6 +16,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from hco_core import __version__
 from hco_core.api.deps import API_PREFIX, ApiDeps, build_deps
 from hco_core.api.errors import add_problem_handlers
+from hco_core.api.routers.approvals import approvals_router
 from hco_core.api.routers.devices import devices_router
 from hco_core.api.routers.health import health_router
 from hco_core.api.routers.runs import runs_router
@@ -76,6 +77,7 @@ def create_app(settings: CoreSettings, deps: ApiDeps) -> FastAPI:
     application.include_router(health_router(deps))
     application.include_router(devices_router(deps), prefix=API_PREFIX)
     application.include_router(runs_router(settings, deps), prefix=API_PREFIX)
+    application.include_router(approvals_router(deps), prefix=API_PREFIX)
     return application
 
 

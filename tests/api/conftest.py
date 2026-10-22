@@ -1,7 +1,7 @@
 """Fixtures of the REST API tests: an app on the test database, YAML, and mock."""
 
 import asyncio
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,8 +18,8 @@ from hco_core.api.deps import ApiDeps
 from hco_core.db.session import create_database_engine, create_sessionmaker
 from hco_core.graphs.checkpointer import setup_checkpointer
 from hco_core.graphs.review import ApprovalDeps
-from hco_core.services.approval import ApprovalService
 from hco_core.services.ledger import NotificationLedger
+from hco_core.services.resume import review_with_resume
 from hco_core.services.runs import RunRepository
 from hco_core.settings import CoreSettings
 from tests.graphs.test_review import (
@@ -28,7 +28,6 @@ from tests.graphs.test_review import (
     INVENTORY,
     RUNNING,
     RecordingChannel,
-    no_resume,
 )
 
 ACTOR = "alice"
@@ -56,6 +55,27 @@ class Api:
         value = actor.encode() if isinstance(actor, str) else actor
         headers = {} if value is None else {ACTOR_HEADER.encode(): value}
         return self.runner.run(_send(self.app, method, path, headers, json))
+
+    def call_together(
+        self, method: str, calls: Sequence[tuple[str, str, Mapping[str, object]]]
+    ) -> list[httpx.Response]:
+        """Send each `(path, actor, json)` request at the same time."""
+
+        async def send_all() -> list[httpx.Response]:
+            return await asyncio.gather(
+                *(
+                    _send(
+                        self.app,
+                        method,
+                        path,
+                        {ACTOR_HEADER.encode(): actor.encode()},
+                        json,
+                    )
+                    for path, actor, json in calls
+                )
+            )
+
+        return self.runner.run(send_all())
 
 
 async def _send(
@@ -104,20 +124,21 @@ def api(
     runner.run(setup_checkpointer(settings))
     engine = create_database_engine(settings)
     sessions = create_sessionmaker(engine)
-    deps = ApiDeps(
-        engine=engine,
-        sessions=sessions,
-        review=ApprovalDeps(
+    review = review_with_resume(
+        settings,
+        sessions,
+        lambda approvals: ApprovalDeps(
             sot=YamlSourceOfTruth(tmp_path / "inventory.yaml"),
             secrets=EnvSecretsProvider(ENVIRON),
             connection=MockConnectionDriver(
                 tmp_path / "transcripts", token_key=b"k" * 32
             ),
             runs=RunRepository(sessions),
-            approvals=ApprovalService(sessions, resume=no_resume),
+            approvals=approvals,
             ledger=NotificationLedger(sessions, {"test": RecordingChannel()}),
             channels=("test",),
         ),
     )
+    deps = ApiDeps(engine=engine, sessions=sessions, review=review)
     yield Api(runner, create_app(settings, deps), deps, tmp_path)
     runner.run(engine.dispose())

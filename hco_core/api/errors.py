@@ -25,7 +25,15 @@ from hco_core.engine.errors import (
     InvalidConfigError,
     UnknownPlatformError,
 )
-from hco_core.services.approval import InvalidActorError
+from hco_core.services.approval import (
+    ApprovalClosedError,
+    ApprovalRequestNotFoundError,
+    DuplicateDecisionError,
+    InvalidActorError,
+    QuorumMismatchError,
+    RequesterMayNotApproveError,
+)
+from hco_core.services.resume import NotParkedError, RequestPendingError
 from hco_core.services.runs import RunNotFoundError
 
 PROBLEM_JSON: Final = "application/problem+json"
@@ -73,6 +81,17 @@ PROBLEMS: Final[dict[type[Exception], Problem]] = {
     DeviceNotFoundError: Problem(404, "device-not-found", "Device not found"),
     RunNotFoundError: Problem(404, "run-not-found", "Run not found"),
     RunNotReadyError: Problem(409, "run-not-ready", "Run not ready"),
+    ApprovalRequestNotFoundError: Problem(
+        404, "approval-not-found", "Approval request not found"
+    ),
+    RequesterMayNotApproveError: Problem(
+        403, "requester-may-not-approve", "Requester may not approve"
+    ),
+    DuplicateDecisionError: Problem(409, "duplicate-decision", "Duplicate decision"),
+    ApprovalClosedError: Problem(409, "approval-closed", "Approval request closed"),
+    QuorumMismatchError: Problem(409, "quorum-mismatch", "Quorum mismatch"),
+    NotParkedError: Problem(409, "run-not-parked", "Run not parked"),
+    RequestPendingError: Problem(409, "approval-pending", "Approval request pending"),
     InvalidInventoryError: Problem(400, "invalid-inventory", "Invalid inventory"),
     DatabaseUnavailableError: Problem(
         503,

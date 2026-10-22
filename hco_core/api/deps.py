@@ -9,10 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from hco_core.adapters import registry
 from hco_core.db.session import create_database_engine, create_sessionmaker
 from hco_core.db.types import ULID_LENGTH
-from hco_core.domain.approval import ApprovalDecision, ApprovalRequest
 from hco_core.graphs.review import ApprovalDeps, AssessmentHook
-from hco_core.services.approval import ApprovalService
 from hco_core.services.ledger import NotificationLedger
+from hco_core.services.resume import review_with_resume
 from hco_core.services.runs import RunRepository
 from hco_core.settings import CoreSettings
 
@@ -39,7 +38,8 @@ class MissingValidationKeyError(ValueError):
 class ApiDeps:
     """The database and the review graph dependencies that the routes use.
 
-    The app disposes of the engine when it stops.
+    The app disposes of the engine when it stops. Build `review` with
+    `review_with_resume` and the same `assessment`, so a decision resumes runs.
     """
 
     engine: AsyncEngine
@@ -57,34 +57,27 @@ def build_deps(settings: CoreSettings) -> ApiDeps:
     """
     if settings.validation_key is None:
         raise MissingValidationKeyError
+    validation_key = settings.validation_key.get_secret_value().encode()
     engine = create_database_engine(settings)
     sessions = create_sessionmaker(engine)
-    review = ApprovalDeps(
-        sot=registry.source_of_truth(settings.sot, {"path": str(settings.sot_path)}),
-        secrets=registry.secrets("env", {}),
-        connection=registry.connection(
-            settings.connection,
-            {"transcripts_dir": str(settings.transcripts_dir)},
-            token_key=settings.validation_key.get_secret_value().encode(),
-        ),
-        runs=RunRepository(sessions),
-        approvals=ApprovalService(sessions, resume=resume_not_wired),
-        ledger=NotificationLedger(
-            sessions, {"log": registry.notification_channel("log", {})}
+    review = review_with_resume(
+        settings,
+        sessions,
+        lambda approvals: ApprovalDeps(
+            sot=registry.source_of_truth(
+                settings.sot, {"path": str(settings.sot_path)}
+            ),
+            secrets=registry.secrets("env", {}),
+            connection=registry.connection(
+                settings.connection,
+                {"transcripts_dir": str(settings.transcripts_dir)},
+                token_key=validation_key,
+            ),
+            runs=RunRepository(sessions),
+            approvals=approvals,
+            ledger=NotificationLedger(
+                sessions, {"log": registry.notification_channel("log", {})}
+            ),
         ),
     )
     return ApiDeps(engine=engine, sessions=sessions, review=review)
-
-
-async def resume_not_wired(  # ruff: ignore[unused-async]
-    request: ApprovalRequest, decision: ApprovalDecision | None
-) -> None:
-    """Refuse to resume a run. TODO(netdevops/hco-core#11): wire `RunResumer`.
-
-    Raises:
-        NotImplementedError: Always. No route of this API decides a request.
-
-    """
-    del request, decision
-    message = "the approvals route arrives with netdevops/hco-core#11"
-    raise NotImplementedError(message)
