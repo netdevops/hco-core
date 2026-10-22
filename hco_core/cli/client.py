@@ -18,6 +18,9 @@ from hco_core.api.deps import API_PREFIX
 from hco_core.api.errors import PROBLEM_TYPE
 
 TIMEOUT_SECONDS: Final = 30.0
+"""The default time that one request waits for the API."""
+API_SCHEMES: Final = frozenset({"http", "https"})
+INVALID_URL: Final = "HCO_API_URL is not an http or https URL with a host"
 MAX_DETAIL: Final = 500
 _LINE_BREAKS: Final = re.compile(r"[^\S ]+")
 """White space other than a space, such as a tab or a new line."""
@@ -43,9 +46,11 @@ class ApiClient:
         actor: str | None,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
-        self.url = str(httpx.URL(base_url).copy_with(userinfo=b""))
+        self.url = safe_url(base_url)
         """The API URL with no user information, safe to print."""
-        headers = {} if actor is None else {ACTOR_HEADER: actor}
+        headers: dict[bytes, bytes] = (
+            {} if actor is None else {ACTOR_HEADER.encode(): actor.encode()}
+        )
         self._http = httpx.Client(
             base_url=base_url.rstrip("/") + API_PREFIX,
             headers=headers,
@@ -54,34 +59,34 @@ class ApiClient:
         )
 
     def get[Model: BaseModel](
-        self, path: str, model: type[Model], params: dict[str, str] | None = None
-    ) -> Model:
-        """Return the answer to a GET as the model, or raise `ApiError`."""
-        return self._send("GET", path, model, params=params)
-
-    def post[Model: BaseModel](
-        self, path: str, model: type[Model], body: dict[str, str] | None = None
-    ) -> Model:
-        """Return the answer to a POST as the model, or raise `ApiError`."""
-        return self._send("POST", path, model, json=body)
-
-    def _send[Model: BaseModel](
         self,
-        method: str,
         path: str,
         model: type[Model],
-        *,
         params: dict[str, str] | None = None,
-        json: dict[str, str] | None = None,
+        timeout: float = TIMEOUT_SECONDS,
+    ) -> Model:
+        """Return the answer to a GET as the model, or raise `ApiError`."""
+        request = self._http.build_request("GET", path, params=params, timeout=timeout)
+        return self._send(request, model)
+
+    def post[Model: BaseModel](
+        self,
+        path: str,
+        model: type[Model],
+        body: dict[str, str] | None = None,
+        timeout: float = TIMEOUT_SECONDS,
+    ) -> Model:
+        """Return the answer to a POST as the model, or raise `ApiError`."""
+        request = self._http.build_request("POST", path, json=body, timeout=timeout)
+        return self._send(request, model)
+
+    def _send[Model: BaseModel](
+        self, request: httpx.Request, model: type[Model]
     ) -> Model:
         try:
-            response = self._http.request(method, path, params=params, json=json)
+            response = self._http.send(request)
         except httpx.HTTPError as error:
-            message = (
-                f"cannot reach the API at {self.url} ({type(error).__name__}); "
-                "check HCO_API_URL, and start the API with: hco-core serve api"
-            )
-            raise ApiError(message) from None
+            raise ApiError(self._failure(request.method, error)) from None
         if not response.is_success:
             raise self._error(response)
         try:
@@ -92,6 +97,24 @@ class ApiClient:
                 "use the same hco-core version for both"
             )
             raise ApiError(message) from None
+
+    def _failure(self, method: str, error: httpx.HTTPError) -> str:
+        """Return the sentence for a request that got no answer."""
+        reason = type(error).__name__
+        if isinstance(error, httpx.TimeoutException) and not isinstance(
+            error, httpx.ConnectTimeout
+        ):
+            if method == "GET":
+                return f"the API at {self.url} did not answer in time ({reason}); try again"
+            return (
+                f"the API at {self.url} did not answer in time ({reason}), and it "
+                "may have done the change; check with hco-core run list or "
+                "hco-core approval list before you try again"
+            )
+        return (
+            f"cannot reach the API at {self.url} ({reason}); "
+            "check HCO_API_URL, and start the API with: hco-core serve api"
+        )
 
     def _error(self, response: httpx.Response) -> ApiError:
         problem = _problem(response)
@@ -106,6 +129,22 @@ class ApiClient:
             )
             return ApiError(message, problem)
         return ApiError(_sentence(problem), problem)
+
+
+def safe_url(base_url: str) -> str:
+    """Return the URL of the API with no user information.
+
+    Raises:
+        ApiError: If the URL is not an http or https URL with a host.
+
+    """
+    try:
+        url = httpx.URL(base_url)
+    except httpx.InvalidURL:
+        raise ApiError(INVALID_URL) from None
+    if url.scheme not in API_SCHEMES or not url.host:
+        raise ApiError(INVALID_URL)
+    return str(url.copy_with(userinfo=b""))
 
 
 def _problem(response: httpx.Response) -> dict[str, object] | None:

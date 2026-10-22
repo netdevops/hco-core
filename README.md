@@ -954,8 +954,16 @@ except `db upgrade`, and it never writes to a device.
 | `serve api [--host] [--port]` | Starts the API on `127.0.0.1:8080`. |
 | `lint-interrupts <paths>` | Runs the rule of one unconditional `interrupt()` in each node. |
 
-- A command that changes data sends your user name in `X-HCO-Actor`. Give it
-  with `--as <name>`, or set `HCO_ACTOR`.
+- A command sends your user name in `X-HCO-Actor` as UTF-8. Give it with
+  `--as <name>`, or set `HCO_ACTOR`. A command that changes data needs it.
+  An `--as` that you give, also an empty one, is never replaced by
+  `HCO_ACTOR`. A name with a space at either end, or with a control or
+  invisible character, stops the command with exit code 2.
+- `run create` exits 0 when the run is `AWAITING_APPROVAL` or `APPROVED`, 1
+  when it ends in a different state such as `BLOCKED`, and 2 when the wait
+  times out. `--timeout` (0 to 3600 seconds) also limits each request.
+- If the API does not answer a change in time, it may have done the change.
+  Check with `run list` or `approval list` before you try again.
 - `approve`, `reject`, and `cancel` take the approval request id.
   `approval list` shows the run of each request.
 - A list shows a table. `--limit` and `--cursor` move through the pages.
@@ -963,7 +971,10 @@ except `db upgrade`, and it never writes to a device.
   the future config.
 - An error is one sentence on stderr, and the exit code is 1. With `--json`,
   stdout also gets the problem document. A message never shows a password
-  from `HCO_API_URL` or `HCO_DATABASE_URL`.
+  from `HCO_API_URL`.
+- The CLI removes control characters from each text of the API before it
+  prints it.
+- These commands read only `HCO_API_URL` and `HCO_ACTOR`.
 
 With the API from "The REST API" on port 8080, Alice requests a run, and Bob
 and Carol approve it:

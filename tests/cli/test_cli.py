@@ -6,9 +6,13 @@ from dataclasses import dataclass, field
 
 import httpx
 import pytest
+import typer
 from typer.testing import CliRunner, Result
 
+from hco_core.api.actor import current_actor
 from hco_core.cli import app as cli
+from hco_core.cli import client
+from hco_core.settings import CoreSettings
 
 RUN_ID = "01JRUN000000000000000000AA"
 REQUEST_ID = "01JREQUEST0000000000000AAA"
@@ -17,6 +21,9 @@ DEVICE_ROW_ID = "01JDEVICE00000000000000000"
 CREATED = "2026-10-22T15:11:56Z"
 API_URL = "http://api.test:8080"
 USAGE_ERROR = 2
+WAIT = 3
+TIMED_OUT = "timed out"
+HOSTILE_NAME = "r1\x1b]0;pwned\x07\x1b[31mRED\r\nFAKE: approved\x9b"
 
 type Reply = httpx.Response | Callable[[httpx.Request], httpx.Response]
 
@@ -77,6 +84,13 @@ def approval(
             for index, actor in enumerate(("bob", "carol")[:approvers])
         ],
     }
+
+
+def created() -> httpx.Response:
+    """Return the answer of `POST /runs`."""
+    return httpx.Response(
+        202, json={"run_id": RUN_ID, "change_set_id": CHANGE_SET_ID, "state": "DRAFT"}
+    )
 
 
 def problem(status: int, code: str, detail: str) -> httpx.Response:
@@ -214,7 +228,7 @@ def test_run_create_stops_waiting_at_the_timeout(
         "run", "create", "--device", "r1", "--as", "alice", "--timeout", "0"
     )
 
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == cli.EXIT_STILL_WORKING, result.output
     assert f"Run {RUN_ID} is still COLLECTING" in result.output
     assert f"hco-core run show {RUN_ID}" in result.output
 
@@ -721,13 +735,191 @@ def test_device_sync_sends_the_actor_and_shows_the_count(
     assert api.requests[0].headers["X-HCO-Actor"] == "alice"
 
 
-def test_an_invalid_setting_is_one_sentence() -> None:
+def test_an_invalid_setting_is_one_sentence(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     """A settings error names the variable and never shows its value."""
-    result = CliRunner().invoke(
-        cli.app, ["device", "list"], env={"HCO_DATABASE_URL": "mysql://u:s3cret@h/db"}
+    monkeypatch.setenv("HCO_DATABASE_URL", "mysql://u:s3cret@h/db")
+
+    with pytest.raises(typer.Exit) as stopped:
+        cli.load_settings(CoreSettings)
+
+    output = capsys.readouterr().err
+    assert stopped.value.exit_code == 1
+    assert "HCO_DATABASE_URL" in output
+    assert "s3cret" not in output
+    assert output.count("\n") == 1
+
+
+def test_the_api_commands_read_only_the_api_settings(
+    api: FakeApi, invoke: Callable[..., Result]
+) -> None:
+    """A database URL that is not valid does not stop a command of the API."""
+    api.on("POST", "/devices/sync", httpx.Response(200, json={"synced": 1}))
+
+    result = invoke(
+        "device", "sync", "--as", "alice", env={"HCO_DATABASE_URL": "mysql://u:p@h/db"}
     )
 
+    assert result.exit_code == 0, result.output
+    assert result.output == "Synced 1 device.\n"
+
+
+def test_api_text_reaches_the_terminal_with_no_control_character(
+    api: FakeApi, invoke: Callable[..., Result]
+) -> None:
+    """A device name with a terminal title code and a new line prints as one line."""
+    api.on("POST", "/runs", created())
+    api.on(
+        "GET",
+        f"/runs/{RUN_ID}",
+        httpx.Response(200, json=run_detail(device_name=HOSTILE_NAME)),
+    )
+
+    result = invoke("run", "create", "--device", "r1", "--as", "alice")
+
+    assert result.exit_code == 0, result.output
+    assert result.output.count("\n") == 1
+    assert not any(character in result.output for character in "\x1b\x07\r\x9b")
+    assert "FAKE: approved" in result.output
+
+
+@pytest.mark.parametrize("actor", ["", " bob", "bob ", "bob\nX-Evil: 1", "bo\u200bb"])
+def test_an_actor_that_the_api_refuses_is_a_usage_error(
+    api: FakeApi, invoke: Callable[..., Result], actor: str
+) -> None:
+    """An explicit `--as` is never replaced by `HCO_ACTOR`, and nothing is sent."""
+    result = invoke("approve", REQUEST_ID, "--as", actor, env={"HCO_ACTOR": "carol"})
+
+    assert result.exit_code == USAGE_ERROR
+    assert api.requests == []
+    assert "--as" in result.output
+    assert result.output.count("\n") == 1
+
+
+def test_an_actor_in_hco_actor_that_the_api_refuses_is_a_usage_error(
+    api: FakeApi, invoke: Callable[..., Result]
+) -> None:
+    """The rule of the API also holds for `HCO_ACTOR`."""
+    result = invoke("device", "list", env={"HCO_ACTOR": " bob"})
+
+    assert result.exit_code == USAGE_ERROR
+    assert api.requests == []
+    assert "HCO_ACTOR" in result.output
+
+
+@pytest.mark.parametrize(
+    ("actor", "expected"), [("josé", "josé"), ("\uff42\uff4f\uff42", "bob")]
+)
+def test_a_non_ascii_actor_goes_to_the_api_as_utf8(
+    api: FakeApi, invoke: Callable[..., Result], actor: str, expected: str
+) -> None:
+    """The header holds the UTF-8 bytes, which the API reads back as the NFKC name."""
+    api.on("POST", "/devices/sync", httpx.Response(200, json={"synced": 2}))
+
+    result = invoke("device", "sync", "--as", actor)
+
+    assert result.exit_code == 0, result.output
+    raw = {key.lower(): value for key, value in api.requests[0].headers.raw}[
+        b"x-hco-actor"
+    ]
+    assert raw == actor.encode()
+    assert current_actor(raw.decode("latin-1")).name == expected
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["http://[::1", "not a url::", "ftp://u:s3cret@host", "http://", "localhost:8080"],
+)
+def test_an_invalid_api_url_names_the_setting(
+    api: FakeApi, invoke: Callable[..., Result], url: str
+) -> None:
+    """A malformed `HCO_API_URL` is one sentence with no user information."""
+    result = invoke("device", "list", env={"HCO_API_URL": url})
+
     assert result.exit_code == 1
-    assert "HCO_DATABASE_URL" in result.output
+    assert api.requests == []
+    assert "HCO_API_URL" in result.output
     assert "s3cret" not in result.output
+    assert result.output.count("\n") == 1
+
+
+@pytest.mark.parametrize(
+    ("state", "code"),
+    [("AWAITING_APPROVAL", 0), ("APPROVED", 0), ("BLOCKED", 1), ("REJECTED", 1)],
+)
+def test_run_create_exit_code_gives_the_outcome(
+    api: FakeApi, invoke: Callable[..., Result], state: str, code: int
+) -> None:
+    """A script can tell a parked run from a run that did not reach approval."""
+    api.on("POST", "/runs", created())
+    api.on("GET", f"/runs/{RUN_ID}", httpx.Response(200, json=run_detail(state)))
+
+    result = invoke("run", "create", "--device", "r1", "--as", "alice")
+
+    assert result.exit_code == code, result.output
+
+
+@pytest.mark.parametrize("timeout", ["nan", "inf", "-1", "3601"])
+def test_run_create_refuses_a_timeout_out_of_range(
+    api: FakeApi, invoke: Callable[..., Result], timeout: str
+) -> None:
+    """The wait is finite."""
+    result = invoke(
+        "run", "create", "--device", "r1", "--as", "a", "--timeout", timeout
+    )
+
+    assert result.exit_code == USAGE_ERROR
+    assert api.requests == []
+
+
+def test_run_create_holds_each_request_to_the_timeout(
+    api: FakeApi, invoke: Callable[..., Result]
+) -> None:
+    """No request waits longer than `--timeout`; other commands wait 30 seconds."""
+    api.on("POST", "/runs", created())
+    api.on("GET", f"/runs/{RUN_ID}", httpx.Response(200, json=run_detail()))
+    api.on(
+        "GET", "/devices", httpx.Response(200, json={"items": [], "next_cursor": None})
+    )
+
+    invoke("run", "create", "--device", "r1", "--as", "alice", "--timeout", str(WAIT))
+    invoke("device", "list")
+
+    reads = [request.extensions["timeout"]["read"] for request in api.requests]
+    assert all(read <= WAIT for read in reads[:-1])
+    assert reads[-1] == client.TIMEOUT_SECONDS
+
+
+@pytest.mark.parametrize(
+    ("args", "error", "expected"),
+    [
+        (
+            ("device", "sync", "--as", "a"),
+            httpx.ReadTimeout,
+            "may have done the change",
+        ),
+        (("device", "list"), httpx.ReadTimeout, "did not answer in time"),
+        (("device", "list"), httpx.ConnectTimeout, "cannot reach the API"),
+    ],
+)
+def test_a_timeout_says_whether_the_change_may_be_done(
+    invoke: Callable[..., Result],
+    api: FakeApi,
+    args: tuple[str, ...],
+    error: type[httpx.TimeoutException],
+    expected: str,
+) -> None:
+    """A POST with no answer can have written, so the operator checks first."""
+
+    def hang(request: httpx.Request) -> httpx.Response:
+        raise error(TIMED_OUT, request=request)
+
+    api.on("POST", "/devices/sync", hang)
+    api.on("GET", "/devices", hang)
+
+    result = invoke(*args)
+
+    assert result.exit_code == 1
+    assert expected in result.output
     assert result.output.count("\n") == 1
