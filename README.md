@@ -903,6 +903,43 @@ checkpoint of the interrupt. A decision that closes the request in that gap
 gets `run-not-parked`, and the run stays parked on the closed request. The
 run-state reconciler (R4, a later phase) closes both gaps.
 
+## The command line
+
+`hco-core` is a client of the REST API at `HCO_API_URL`. It approves only
+through `POST /api/v1/approvals/{id}/decide`. It never writes to the database
+or to a device.
+
+| Command | Does |
+|---|---|
+| `run create --device <id> [--title] [--no-wait] [--timeout]` | Starts a run, and waits until its review stops. |
+| `run list [--state]`, `run show <id>`, `run diff <id>` | Shows the runs, one run, or the remediation and the rollback of a run. |
+| `approval list` | Shows the pending approval requests of the parked runs. |
+| `approve <id> [--comment]`, `reject <id> --comment` | Decides on an approval request. |
+| `cancel <id> [--comment]` | Closes an approval request with no decision. |
+| `device list`, `device sync` | Shows the devices, or reads the source of truth. |
+
+- A command that changes data sends your user name in `X-HCO-Actor`. Give it
+  with `--as <name>`, or set `HCO_ACTOR`.
+- `approve`, `reject`, and `cancel` take the approval request id.
+  `approval list` shows the run of each request.
+- A list shows a table. `--limit` and `--cursor` move through the pages.
+- `--json` prints the answer of the API as JSON. `run diff --json` also gives
+  the future config.
+- An error is one sentence on stderr, and the exit code is 1. With `--json`,
+  stdout also gets the problem document. A message never shows a password
+  from `HCO_API_URL` or `HCO_DATABASE_URL`.
+
+With the API from "The REST API" on port 8080, Alice requests a run, and Bob
+and Carol approve it:
+
+```bash
+poetry run hco-core device sync --as alice
+poetry run hco-core run create --device r1 --as alice
+poetry run hco-core approval list
+poetry run hco-core approve <request_id> --as bob
+poetry run hco-core approve <request_id> --as carol
+```
+
 ## Requirements
 
 Python 3.12 to 3.14.
