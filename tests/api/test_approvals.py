@@ -12,7 +12,9 @@ from hco_core.api.deps import build_deps
 from hco_core.api.errors import PROBLEM_JSON, PROBLEM_TYPE
 from hco_core.domain.approval import ApprovalDecision, ApprovalRequest, RunState
 from hco_core.domain.risk import RiskTier
+from hco_core.services.audit import Actor
 from hco_core.services.resume import RunResumer
+from hco_core.services.runs import RunUpdate
 from hco_core.settings import CoreSettings
 from tests.api.conftest import ACTOR, Api
 from tests.api.test_runs import create_run, draft_run
@@ -20,6 +22,8 @@ from tests.graphs.test_review import ENVIRON
 
 APPROVALS = "/api/v1/approvals"
 UNKNOWN = "01JNOSUCHREQUEST0000000000"
+MAX_DETAIL = 80
+SYSTEM = Actor("test", "system", "api")
 
 
 def parked_request(api: Api) -> tuple[str, str]:
@@ -178,38 +182,80 @@ def test_concurrent_decisions_resume_the_run_once(api: Api, resumed: list[str]) 
     assert api.call("GET", f"/api/v1/runs/{run_id}").json()["state"] == "APPROVED"
 
 
-def test_a_decision_on_a_run_that_is_not_parked_is_409_and_stays_recorded(
-    api: Api,
-) -> None:
-    """The run did not park, so the closed request cannot resume it."""
+def request_before_park(api: Api, state: RunState) -> tuple[str, str]:
+    """Open a pending request on a run in the state, and return the run and request ids."""
     run_id = draft_run(api)
+    api.runner.run(
+        api.deps.review.runs.update_run(run_id, RunUpdate(state=state), SYSTEM)
+    )
     change_set_id = api.call("GET", f"/api/v1/runs/{run_id}").json()["change_set_id"]
     request = api.runner.run(
         api.deps.review.approvals.upsert_request(
             change_set_id,
             RiskTier.LOW,
             1,
-            "test",
+            SYSTEM.name,
             datetime.now(UTC) + timedelta(hours=1),
         )
     )
+    return run_id, request.id
 
-    refused = decide(api, request.id, "bob")
 
-    assert (refused["status"], refused["type"]) == (
+@pytest.mark.parametrize("state", [RunState.DRAFT, RunState.EVALUATING_POLICY])
+def test_a_request_before_its_run_parks_is_hidden_and_refused_with_no_write(
+    api: Api, engine: Engine, state: RunState
+) -> None:
+    """The graph opens the request before it parks; no route acts in that gap."""
+    run_id, request_id = request_before_park(api, state)
+
+    listed = [item["id"] for item in api.call("GET", APPROVALS).json()["items"]]
+    decided = decide(api, request_id, "bob")
+    cancelled = api.call("POST", f"{APPROVALS}/{request_id}/cancel", actor="bob")
+
+    assert request_id not in listed
+    assert (decided["status"], decided["type"]) == (
         HTTPStatus.CONFLICT,
-        f"{PROBLEM_TYPE}run-not-parked",
+        f"{PROBLEM_TYPE}run-not-awaiting-approval",
     )
-    assert run_id in str(refused["detail"])
-    shown = api.call("GET", f"{APPROVALS}/{request.id}").json()
-    assert (shown["state"], shown["run_state"]) == ("approved", RunState.DRAFT)
+    assert run_id in str(decided["detail"])
+    assert cancelled.status_code == HTTPStatus.CONFLICT
+    assert cancelled.json()["type"] == f"{PROBLEM_TYPE}run-not-awaiting-approval"
+    shown = api.call("GET", f"{APPROVALS}/{request_id}").json()
+    assert (shown["state"], shown["run_state"], shown["decisions"]) == (
+        "pending",
+        state,
+        [],
+    )
+    with engine.connect() as connection:
+        count = connection.execute(text("SELECT count(*) FROM hco.approval_decision"))
+        assert count.scalar_one() == 0
+
+
+def test_a_pending_request_of_a_run_that_left_the_review_can_only_be_cancelled(
+    api: Api,
+) -> None:
+    """A run that ended `BLOCKED` takes no decision, but its request can close."""
+    _, request_id = request_before_park(api, RunState.BLOCKED)
+
+    decided = decide(api, request_id, "bob")
+    cancelled = api.call("POST", f"{APPROVALS}/{request_id}/cancel", actor="bob")
+
+    assert decided["type"] == f"{PROBLEM_TYPE}run-not-awaiting-approval"
+    assert cancelled.status_code == HTTPStatus.OK
+    assert (cancelled.json()["state"], cancelled.json()["run_state"]) == (
+        "cancelled",
+        RunState.BLOCKED,
+    )
 
 
 @pytest.mark.parametrize(
     ("method", "suffix"),
     [("GET", ""), ("POST", "/decide"), ("POST", "/cancel")],
 )
-@pytest.mark.parametrize("request_id", [UNKNOWN, "not-an-id", "nul%00"])
+@pytest.mark.parametrize(
+    "request_id",
+    [UNKNOWN, "not-an-id", "nul%00", pytest.param("x" * 5000, id="long")],
+)
 def test_an_unknown_approval_is_404(
     api: Api, method: str, suffix: str, request_id: str
 ) -> None:
@@ -224,6 +270,7 @@ def test_an_unknown_approval_is_404(
     assert response.status_code == HTTPStatus.NOT_FOUND
     assert response.headers["content-type"] == PROBLEM_JSON
     assert response.json()["type"] == f"{PROBLEM_TYPE}approval-not-found"
+    assert len(response.json()["detail"]) <= MAX_DETAIL
 
 
 def test_decide_needs_the_actor_header_and_a_valid_decision(api: Api) -> None:

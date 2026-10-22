@@ -849,8 +849,18 @@ commit. The review graph then reads the closed request and sets the run state.
 | `requester-may-not-approve` | 403 | The requester decides on their own change. |
 | `duplicate-decision` | 409 | The actor already decided on the request. |
 | `approval-closed` | 409 | The request is approved, rejected, cancelled, or expired. |
+| `run-not-awaiting-approval` | 409 | The request is pending, but its run is not parked. Nothing is written. |
 | `run-not-parked` | 409 | The decision closed the request, but the run is not parked. The decision stays recorded. |
+| `approval-pending` | 409 | The resumer found the request still pending. The run stays parked. |
+| `quorum-mismatch` | 409 | A request asks for more approvals than the open request needs. |
 | `approval-not-found` | 404 | No request has the id. |
+
+A 500 or 503 after the request closes also leaves the decision recorded.
+
+The review graph opens the request before the run parks. Until the run is
+`AWAITING_APPROVAL`, the list does not show the request, and a decide or a
+cancel gets `run-not-awaiting-approval`. A run that ended, for example in
+`BLOCKED`, takes no decision, but its pending request can be cancelled.
 
 Find the request of the run, and show it:
 
@@ -888,6 +898,10 @@ curl -s -X POST -H 'X-HCO-Actor: bob' -H 'Content-Type: application/json' \
 
 If the process stops after a decision closes the request and before the run
 resumes, the run stays at `AWAITING_APPROVAL`. Phase 1 does not continue it.
+A short gap also stays between the commit of `AWAITING_APPROVAL` and the
+checkpoint of the interrupt. A decision that closes the request in that gap
+gets `run-not-parked`, and the run stays parked on the closed request. The
+run-state reconciler (R4, a later phase) closes both gaps.
 
 ## Requirements
 

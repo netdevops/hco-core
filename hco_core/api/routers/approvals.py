@@ -17,7 +17,7 @@ from sqlalchemy import select
 
 from hco_core.api.actor import current_actor
 from hco_core.api.deps import DEFAULT_PAGE, ULID_PATTERN, ApiDeps, Cursor, Limit
-from hco_core.api.errors import database_errors
+from hco_core.api.errors import RunNotAwaitingApprovalError, database_errors
 from hco_core.db import models
 from hco_core.domain.approval import (
     ApprovalDecision,
@@ -27,10 +27,13 @@ from hco_core.domain.approval import (
     RunState,
 )
 from hco_core.domain.base import BaseModel
+from hco_core.graphs.review import BLOCKABLE_STATES
 from hco_core.services.approval import ApprovalRequestNotFoundError
 from hco_core.services.audit import Actor
 
 MAX_COMMENT: Final = 4000
+DECIDE_REFUSED: Final = frozenset(RunState) - {RunState.AWAITING_APPROVAL}
+"""The run states in which a pending request takes no decision."""
 _ULID: Final = re.compile(ULID_PATTERN)
 
 
@@ -85,7 +88,7 @@ def approvals_router(deps: ApiDeps) -> APIRouter:
     async def list_approvals(  # pyright: ignore[reportUnusedFunction]
         limit: Limit = DEFAULT_PAGE, cursor: Cursor = None
     ) -> ApprovalPage:
-        """Return one page of the pending requests, newest first."""
+        """Return one page of the pending requests of parked runs, newest first."""
         query = (
             select(models.ApprovalRequest, models.RemediationRun.id)
             .join(
@@ -93,7 +96,10 @@ def approvals_router(deps: ApiDeps) -> APIRouter:
                 models.RemediationRun.change_set_id
                 == models.ApprovalRequest.change_set_id,
             )
-            .where(models.ApprovalRequest.state == ApprovalState.PENDING)
+            .where(
+                models.ApprovalRequest.state == ApprovalState.PENDING,
+                models.RemediationRun.state == RunState.AWAITING_APPROVAL,
+            )
             .order_by(models.ApprovalRequest.id.desc())
             .limit(limit + 1)
         )
@@ -124,6 +130,12 @@ def approvals_router(deps: ApiDeps) -> APIRouter:
     ) -> ApprovalDetail:
         """Record the decision; a decision that closes the request resumes the run."""
         _check_id(request_id)
+        await _check_run(
+            deps,
+            request_id,
+            DECIDE_REFUSED,
+            "a request takes a decision only while its run is AWAITING_APPROVAL",
+        )
         with database_errors():
             await service.decide(
                 request_id, actor.name, body.decision, "api", body.comment
@@ -138,6 +150,12 @@ def approvals_router(deps: ApiDeps) -> APIRouter:
     ) -> ApprovalDetail:
         """Close the pending request with no decision. A parked run ends `BLOCKED`."""
         _check_id(request_id)
+        await _check_run(
+            deps,
+            request_id,
+            BLOCKABLE_STATES,
+            "cancel the request when the run is AWAITING_APPROVAL or has ended",
+        )
         with database_errors():
             await service.cancel(
                 request_id, actor.name, "api", "" if body is None else body.comment
@@ -161,6 +179,25 @@ async def _detail(deps: ApiDeps, request_id: str) -> ApprovalDetail:
     )
 
 
+async def _check_run(
+    deps: ApiDeps, request_id: str, refused: frozenset[RunState], hint: str
+) -> None:
+    """Refuse to touch a pending request while its run is in a refused state.
+
+    The graph opens the request before the run parks. A write in that gap
+    would close a request that no resume can reach.
+
+    Raises:
+        RunNotAwaitingApprovalError: If the request is pending and the run
+            state is refused.
+
+    """
+    detail = await _detail(deps, request_id)
+    if detail.state is ApprovalState.PENDING and detail.run_state in refused:
+        message = f"run {detail.run_id!r} is {detail.run_state}; {hint}"
+        raise RunNotAwaitingApprovalError(message)
+
+
 def _check_id(request_id: str) -> None:
     """Refuse an id that no request can have, before any query.
 
@@ -169,7 +206,7 @@ def _check_id(request_id: str) -> None:
 
     """
     if _ULID.fullmatch(request_id) is None:
-        message = f"no approval request has the id {request_id!r}"
+        message = "no approval request has this id"
         raise ApprovalRequestNotFoundError(message)
 
 

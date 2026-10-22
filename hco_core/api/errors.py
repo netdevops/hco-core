@@ -62,6 +62,10 @@ class RunNotReadyError(RuntimeError):
     """The run has no remediation yet."""
 
 
+class RunNotAwaitingApprovalError(RuntimeError):
+    """The run of a pending request is not parked, so no route may close the request."""
+
+
 @dataclass(frozen=True, slots=True)
 class Problem:
     """The status and the stable code of one error class.
@@ -81,6 +85,9 @@ PROBLEMS: Final[dict[type[Exception], Problem]] = {
     DeviceNotFoundError: Problem(404, "device-not-found", "Device not found"),
     RunNotFoundError: Problem(404, "run-not-found", "Run not found"),
     RunNotReadyError: Problem(409, "run-not-ready", "Run not ready"),
+    RunNotAwaitingApprovalError: Problem(
+        409, "run-not-awaiting-approval", "Run not awaiting approval"
+    ),
     ApprovalRequestNotFoundError: Problem(
         404, "approval-not-found", "Approval request not found"
     ),
