@@ -110,7 +110,7 @@ def run_create(  # ruff: ignore[too-many-arguments]
     ] = 30.0,
     as_json: JsonOption = False,
 ) -> None:
-    """Start a review of the device. The run stops for approval, or it is blocked."""
+    """Start a review of the device. The run parks for approval, or it ends BLOCKED."""
     client = _client(ctx, actor)
     body = {"device_id": device} | ({"title": title} if title else {})
     with _reported(as_json=as_json):
