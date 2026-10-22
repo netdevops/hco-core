@@ -6,6 +6,7 @@ from typing import Literal
 
 import pytest
 from sqlalchemy import Engine, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from hco_core.domain.approval import RunState
@@ -253,3 +254,30 @@ def test_the_guarded_writes_refuse_a_run_in_another_state(
     assert runner.run(runs.get_run(run_id)).state is RunState.BLOCKED
     with pytest.raises(RunNotFoundError):
         runner.run(runs.get_run("missing"))
+
+
+def test_a_change_set_and_its_run_are_written_in_one_transaction(
+    runner: asyncio.Runner, runs: RunRepository, engine: Engine, device_id: str
+) -> None:
+    """Both rows and both audit events are written, or none is."""
+    change_set_id, run_id = runner.run(
+        runs.create_change_set_and_run("change", device_id, "thread-1", REQUESTER_ACTOR)
+    )
+
+    with pytest.raises(IntegrityError):
+        runner.run(
+            runs.create_change_set_and_run(
+                "change", "01JNODEVICE000000000000000", "thread-2", REQUESTER_ACTOR
+            )
+        )
+
+    with engine.connect() as connection:
+        change_sets = connection.execute(
+            text("SELECT id FROM hco.change_set")
+        ).scalars()
+        assert list(change_sets) == [change_set_id]
+    assert runner.run(runs.get_run(run_id)).thread_id == "thread-1"
+    assert [row[1] for row in audit_rows(engine)] == [
+        "change_set.create",
+        "remediation_run.create",
+    ]

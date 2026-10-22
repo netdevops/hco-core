@@ -7,7 +7,7 @@ import asyncio
 import re
 from datetime import datetime
 from itertools import starmap
-from typing import Annotated, Final, cast
+from typing import TYPE_CHECKING, Annotated, Final, cast
 
 import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, Response, status
@@ -16,7 +16,7 @@ from sqlalchemy import Select, select
 
 from hco_core.api.actor import current_actor
 from hco_core.api.deps import API_PREFIX, DEFAULT_PAGE, ApiDeps, Cursor, Limit
-from hco_core.api.errors import RunNotReadyError
+from hco_core.api.errors import RunNotReadyError, database_errors
 from hco_core.api.routers.devices import find_device
 from hco_core.db import models
 from hco_core.db.types import new_id
@@ -24,14 +24,29 @@ from hco_core.domain.approval import RunState
 from hco_core.domain.base import BaseModel
 from hco_core.engine.remediation import render_lines
 from hco_core.graphs.checkpointer import open_checkpointer
-from hco_core.graphs.review import ReviewState, build_review_graph, start_run
+from hco_core.graphs.review import (
+    BLOCKABLE_STATES,
+    GRAPH_ACTOR,
+    ReviewState,
+    build_review_graph,
+    start_run,
+)
 from hco_core.services.audit import Actor
-from hco_core.services.runs import RunNotFoundError
+from hco_core.services.runs import RunNotFoundError, RunUpdate
 from hco_core.settings import CoreSettings
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 MAX_ERRORS: Final = 20
 MAX_ERROR_CHARACTERS: Final = 500
-_URL_CREDENTIALS: Final = re.compile(r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)[^/@\s]+@")
+_URL_CREDENTIALS: Final = re.compile(r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)\S*@")
+"""A URL with user information, up to the last `@` before white space."""
+_ABSOLUTE_PATH: Final = re.compile(r"(?<![\w/:.~@-])(?:/[^\s/'\"]+)+/?")
+"""An absolute path that is not a part of a URL."""
+START_ERROR: Final = (
+    "the review did not start or stopped early; read the server log line run_failed"
+)
 
 _log = structlog.get_logger(__name__)
 
@@ -40,7 +55,9 @@ class CreateRun(BaseModel):
     """The device of the run, by row id or source of truth id, and a title."""
 
     device_id: Annotated[str, Field(min_length=1, max_length=255)]
-    title: Annotated[str | None, Field(min_length=1, max_length=255)] = None
+    title: Annotated[
+        str | None, Field(min_length=1, max_length=255, pattern=r"^[^\x00-\x1f\x7f]+$")
+    ] = None
 
 
 class RunCreated(BaseModel):
@@ -72,6 +89,8 @@ class RunDetail(RunSummary):
 
     plan_source: str
     change_fingerprint: str | None
+    unknowns: tuple[str, ...] | None
+    """What the review could not judge, from the checkpoint. `None` without one."""
     errors: tuple[str, ...]
     """The errors of the run. A URL loses its credentials, and each error is cut."""
 
@@ -107,12 +126,11 @@ def runs_router(settings: CoreSettings, deps: ApiDeps) -> APIRouter:
     ) -> RunCreated:
         """Create a change set and a run, then start the review graph after the response."""
         device = await find_device(deps, body.device_id)
-        runs = deps.review.runs
-        change_set_id = await runs.create_change_set(
-            body.title or f"run on {device.name}", actor
-        )
         thread_id = new_id()
-        run_id = await runs.create_run(change_set_id, device.id, thread_id, actor)
+        with database_errors():
+            change_set_id, run_id = await deps.review.runs.create_change_set_and_run(
+                body.title or f"run on {device.name}", device.id, thread_id, actor
+            )
         state: ReviewState = {
             "run_id": run_id,
             "change_set_id": change_set_id,
@@ -136,8 +154,9 @@ def runs_router(settings: CoreSettings, deps: ApiDeps) -> APIRouter:
             query = query.where(models.RemediationRun.id < cursor)
         if state is not None:
             query = query.where(models.RemediationRun.state == state)
-        async with deps.sessions() as session:
-            rows = (await session.execute(query)).all()
+        with database_errors():
+            async with deps.sessions() as session:
+                rows = (await session.execute(query)).all()
         items = tuple(starmap(_summary, rows[:limit]))
         return RunPage(
             items=items, next_cursor=items[-1].id if len(rows) > limit else None
@@ -152,7 +171,8 @@ def runs_router(settings: CoreSettings, deps: ApiDeps) -> APIRouter:
             **_summary(*row).model_dump(),
             plan_source=run.plan_source,
             change_fingerprint=run.change_fingerprint,
-            errors=_errors(run.error),
+            unknowns=await _unknowns(settings, run.id, run.thread_id),
+            errors=run_errors(run.error),
         )
 
     @router.get("/{run_id}/diff")
@@ -164,12 +184,15 @@ def runs_router(settings: CoreSettings, deps: ApiDeps) -> APIRouter:
 
         """
         run, device, _ = await _run(deps, run_id)
-        async with deps.sessions() as session:
-            future = (
-                None
-                if run.future_snapshot_id is None
-                else await session.get(models.ConfigSnapshot, run.future_snapshot_id)
-            )
+        with database_errors():
+            async with deps.sessions() as session:
+                future = (
+                    None
+                    if run.future_snapshot_id is None
+                    else await session.get(
+                        models.ConfigSnapshot, run.future_snapshot_id
+                    )
+                )
         if future is None or run.remediation_dump is None or run.rollback_dump is None:
             message = f"run {run_id!r} is {run.state}; it has no remediation yet"
             raise RunNotReadyError(message)
@@ -199,6 +222,39 @@ async def _start(
             await start_run(graph, state, thread_id)
     except Exception as error:  # ruff: ignore[blind-except]
         _log.error("run_failed", run_id=state.get("run_id"), error=type(error).__name__)
+        await _block(deps, state)
+
+
+async def _unknowns(
+    settings: CoreSettings, run_id: str, thread_id: str
+) -> tuple[str, ...] | None:
+    """Return the `unknowns` of the last checkpoint of the run, or `None`."""
+    try:
+        async with open_checkpointer(settings) as saver:
+            saved = await saver.aget_tuple({"configurable": {"thread_id": thread_id}})
+    except Exception as error:  # ruff: ignore[blind-except]
+        _log.error("unknowns_unavailable", run_id=run_id, error=type(error).__name__)
+        return None
+    if saved is None:
+        return None
+    values = cast("Mapping[str, object]", saved.checkpoint["channel_values"])
+    unknowns = values.get("unknowns")
+    listed = cast("list[object]", unknowns) if isinstance(unknowns, list) else []
+    return tuple(str(item) for item in listed)
+
+
+async def _block(deps: ApiDeps, state: ReviewState) -> None:
+    """Move a run whose graph failed to `BLOCKED`, as a best effort."""
+    run_id = state.get("run_id", "")
+    try:
+        await deps.review.runs.update_run(
+            run_id,
+            RunUpdate(state=RunState.BLOCKED, error={"errors": [START_ERROR]}),
+            GRAPH_ACTOR,
+            only_from=BLOCKABLE_STATES,
+        )
+    except Exception as error:  # ruff: ignore[blind-except]
+        _log.error("run_block_failed", run_id=run_id, error=type(error).__name__)
 
 
 def _runs() -> Select[models.RemediationRun, models.Device, str]:
@@ -212,10 +268,15 @@ def _runs() -> Select[models.RemediationRun, models.Device, str]:
 
 
 async def _run(deps: ApiDeps, run_id: str) -> _Row:
-    async with deps.sessions() as session:
-        row = (
-            await session.execute(_runs().where(models.RemediationRun.id == run_id))
-        ).one_or_none()
+    row = None
+    if "\x00" not in run_id:
+        with database_errors():
+            async with deps.sessions() as session:
+                row = (
+                    await session.execute(
+                        _runs().where(models.RemediationRun.id == run_id)
+                    )
+                ).one_or_none()
     if row is None:
         message = f"no remediation run {run_id!r}"
         raise RunNotFoundError(message)
@@ -241,12 +302,23 @@ def _summary(
     )
 
 
-def _errors(error: models.JSONObject | None) -> tuple[str, ...]:
+def run_errors(error: models.JSONObject | None) -> tuple[str, ...]:
+    """Return the errors of a run as the API shows them.
+
+    A URL loses its user information, an absolute path keeps its base name
+    only, and each error is cut to `MAX_ERROR_CHARACTERS`.
+    """
     listed = (error or {}).get("errors")
     if not isinstance(listed, list):
         return ()
     items = cast("list[object]", listed)
-    return tuple(
-        _URL_CREDENTIALS.sub(r"\g<scheme>***@", str(item))[:MAX_ERROR_CHARACTERS]
-        for item in items[:MAX_ERRORS]
-    )
+    return tuple(_safe(str(item))[:MAX_ERROR_CHARACTERS] for item in items[:MAX_ERRORS])
+
+
+def _safe(text: str) -> str:
+    without_credentials = _URL_CREDENTIALS.sub(r"\g<scheme>***@", text)
+    return _ABSOLUTE_PATH.sub(_base_name, without_credentials)
+
+
+def _base_name(match: re.Match[str]) -> str:
+    return ".../" + match.group().rstrip("/").rsplit("/", 1)[-1]

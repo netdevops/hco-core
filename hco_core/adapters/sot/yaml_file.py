@@ -185,7 +185,9 @@ class YamlSourceOfTruth:
         path = (folder / entry.intended_config).resolve()
         where = f"device {record.id!r}, key 'intended_config'"
         if not path.is_relative_to(folder):
-            message = f"{where}: {entry.intended_config} is outside {folder}"
+            message = (
+                f"{where}: {entry.intended_config} is outside the inventory folder"
+            )
             raise InvalidInventoryError(message)
         try:
             body = path.read_text(encoding="utf8")

@@ -1,14 +1,18 @@
 """The run routes: create a run that parks for approval, list, show, and diff."""
 
+import asyncio
+from dataclasses import replace
 from http import HTTPStatus
 
+import pytest
 from pydantic import SecretStr
 from sqlalchemy import Engine, text
 from structlog.testing import capture_logs
 
 from hco_core.api.app import create_app
 from hco_core.api.errors import PROBLEM_JSON
-from hco_core.api.routers.runs import MAX_ERROR_CHARACTERS
+from hco_core.api.routers.runs import MAX_ERROR_CHARACTERS, START_ERROR, run_errors
+from hco_core.db.session import create_database_engine, create_sessionmaker
 from hco_core.domain.approval import RunState
 from hco_core.services.audit import Actor
 from hco_core.services.runs import RunUpdate
@@ -51,6 +55,7 @@ def test_create_returns_202_and_the_run_parks_for_approval(api: Api) -> None:
     assert created.json()["state"] == RunState.DRAFT
     assert shown["state"] == RunState.AWAITING_APPROVAL
     assert shown["risk_tier_final"] == "HIGH"
+    assert shown["unknowns"] == ["no risk assessment"]
     assert shown["requested_by"] == ACTOR
     assert shown["sot_device_id"] == "r1"
     assert shown["errors"] == []
@@ -180,8 +185,10 @@ def test_the_list_pages_the_newest_run_first_and_filters_by_state(api: Api) -> N
     assert [item["id"] for item in only_blocked["items"]] == [blocked]
 
 
-def test_a_graph_that_fails_to_start_logs_the_run_and_no_detail(api: Api) -> None:
-    """The run stays in DRAFT, and the log names the run and the error class."""
+def test_a_graph_that_fails_to_start_ends_blocked_and_logs_the_class(
+    api: Api,
+) -> None:
+    """The run is BLOCKED with an error that names the log line, and no detail."""
     api.call("POST", "/api/v1/devices/sync", actor=ACTOR)
     broken = create_app(CoreSettings(database_url=SecretStr(UNREACHABLE_URL)), api.deps)
     api.app = broken
@@ -202,4 +209,155 @@ def test_a_graph_that_fails_to_start_logs_the_run_and_no_detail(api: Api) -> Non
             "error": "OperationalError",
         }
     ]
-    assert api.call("GET", f"/api/v1/runs/{run_id}").json()["state"] == RunState.DRAFT
+    shown = api.call("GET", f"/api/v1/runs/{run_id}").json()
+    assert shown["state"] == RunState.BLOCKED
+    assert shown["errors"] == [START_ERROR]
+
+
+def test_a_run_that_cannot_be_blocked_keeps_its_state_and_logs_it(
+    api: Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The BLOCKED write is best effort. Its failure is logged with the class only."""
+    api.call("POST", "/api/v1/devices/sync", actor=ACTOR)
+    api.app = create_app(
+        CoreSettings(database_url=SecretStr(UNREACHABLE_URL)), api.deps
+    )
+
+    async def refuse(*_: object, **__: object) -> bool:
+        await asyncio.sleep(0)
+        raise RuntimeError(URL_IN_ERROR)
+
+    monkeypatch.setattr(api.deps.review.runs, "update_run", refuse)
+
+    with capture_logs() as lines:
+        response = api.call(
+            "POST", "/api/v1/runs", actor=ACTOR, json={"device_id": "r1"}
+        )
+
+    run_id = response.json()["run_id"]
+    assert {
+        "event": "run_block_failed",
+        "log_level": "error",
+        "run_id": run_id,
+        "error": "RuntimeError",
+    } in lines
+    assert "s3cret" not in repr(lines)
+
+
+URL_IN_ERROR = "postgresql://hco:s3cret@db/hco"
+
+
+@pytest.mark.parametrize(
+    ("error", "shown"),
+    [
+        ("postgresql://hco:p/ss@db/hco failed", "postgresql://***@db/hco failed"),
+        ("postgresql://hco:p@ss@db/hco failed", "postgresql://***@db/hco failed"),
+        ("postgresql://hco:p:ss@db/hco failed", "postgresql://***@db/hco failed"),
+        ("redis://:pw@cache/0 down", "redis://***@cache/0 down"),
+        (
+            "from postgresql://a:x@one/hco to postgresql://b:y@two/hco",
+            "from postgresql://***@one/hco to postgresql://***@two/hco",
+        ),
+        (
+            "intended.txt is outside /srv/hco/inventory, see '/srv/hco/x.txt'",
+            "intended.txt is outside .../inventory, see '.../x.txt'",
+        ),
+    ],
+    ids=["slash", "at", "colon", "no-user", "two-urls", "paths"],
+)
+def test_a_run_error_shows_no_credential_and_no_absolute_path(
+    error: str, shown: str
+) -> None:
+    """The user information of a URL goes, and a path keeps its base name only."""
+    assert run_errors({"errors": [error]}) == (shown,)
+
+
+def test_an_intended_config_outside_the_folder_shows_no_folder(api: Api) -> None:
+    """The run error names the key and the device, not the server folder."""
+    outside = "  - {id: r3, name: edge-3, platform_name: CISCO_IOS, mgmt_address: 10.0.0.3, intended_config: /nonexistent/dir/intended.txt}\n"
+    write_inventory(api.root, (api.root / "inventory.yaml").read_text() + outside)
+
+    errors = api.call("GET", f"/api/v1/runs/{create_run(api, 'r3')}").json()["errors"]
+
+    assert "outside the inventory folder" in errors[0]
+    assert str(api.root) not in errors[0]
+    assert "/nonexistent/dir" not in errors[0]
+
+
+def test_the_run_reads_are_503_when_the_database_is_down(
+    api: Api, runner: asyncio.Runner
+) -> None:
+    """A database that does not answer gives the same problem as `/health`."""
+    engine = create_database_engine(
+        CoreSettings(database_url=SecretStr(UNREACHABLE_URL))
+    )
+    deps = replace(api.deps, engine=engine, sessions=create_sessionmaker(engine))
+    down = Api(runner, create_app(CoreSettings(), deps), deps, api.root)
+    run_id = "01JRUN0000000000000000000A"
+
+    for path in (
+        "/api/v1/runs",
+        f"/api/v1/runs/{run_id}",
+        f"/api/v1/runs/{run_id}/diff",
+    ):
+        response = down.call("GET", path)
+
+        assert response.status_code == HTTPStatus.SERVICE_UNAVAILABLE
+        assert response.json()["type"] == "urn:hco-core:problem:database-unavailable"
+    runner.run(engine.dispose())
+
+
+def test_a_title_with_a_control_character_is_422(api: Api, engine: Engine) -> None:
+    """A NUL or another control character never reaches the database."""
+    api.call("POST", "/api/v1/devices/sync", actor=ACTOR)
+
+    response = api.call(
+        "POST",
+        "/api/v1/runs",
+        actor=ACTOR,
+        json={"device_id": "r1", "title": "a\u0000b"},
+    )
+
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+    assert response.json()["errors"][0]["loc"] == ["body", "title"]
+    with engine.connect() as connection:
+        assert (
+            connection.execute(text("SELECT count(*) FROM hco.change_set")).scalar_one()
+            == 0
+        )
+
+
+def test_a_run_id_with_a_nul_is_404(api: Api) -> None:
+    """No run id holds a NUL, so the API does not ask the database."""
+    for path in ("/api/v1/runs/%00", "/api/v1/runs/%00/diff"):
+        assert api.call("GET", path).status_code == HTTPStatus.NOT_FOUND
+
+
+def test_a_run_with_no_checkpoint_has_no_unknowns(api: Api) -> None:
+    """A run that no graph started shows `unknowns` as null, not an error."""
+    run_id = draft_run(api)
+
+    shown = api.call("GET", f"/api/v1/runs/{run_id}")
+
+    assert shown.status_code == HTTPStatus.OK
+    assert shown.json()["unknowns"] is None
+
+
+def test_an_unreadable_checkpoint_gives_no_unknowns_and_a_log_line(api: Api) -> None:
+    """The run still shows, and the log names the error class only."""
+    run_id = create_run(api)
+    api.app = create_app(
+        CoreSettings(database_url=SecretStr(UNREACHABLE_URL)), api.deps
+    )
+
+    with capture_logs() as lines:
+        shown = api.call("GET", f"/api/v1/runs/{run_id}")
+
+    assert shown.json()["unknowns"] is None
+    assert shown.json()["state"] == RunState.AWAITING_APPROVAL
+    assert {
+        "event": "unknowns_unavailable",
+        "log_level": "error",
+        "run_id": run_id,
+        "error": "OperationalError",
+    } in lines

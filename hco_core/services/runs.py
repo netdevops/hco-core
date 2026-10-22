@@ -122,6 +122,35 @@ class RunRepository:
             _audit_transition(session, actor, run, None)
             return run.id
 
+    async def create_change_set_and_run(
+        self, title: str, device_id: str, thread_id: str, requester: Actor
+    ) -> tuple[str, str]:
+        """Create a change set and its run in `DRAFT`, in one transaction.
+
+        The return is the change set id and the run id.
+        """
+        async with self._sessions.begin() as session:
+            change_set = models.ChangeSet(
+                id=new_id(),
+                title=title,
+                requested_by=requester.name,
+                transaction_class="strict",
+                state=RunState.DRAFT,
+            )
+            session.add(change_set)
+            _audit_transition(session, requester, change_set, None)
+            await session.flush()
+            run = models.RemediationRun(
+                id=new_id(),
+                change_set_id=change_set.id,
+                device_id=device_id,
+                thread_id=thread_id,
+                state=RunState.DRAFT,
+            )
+            session.add(run)
+            _audit_transition(session, requester, run, None)
+            return change_set.id, run.id
+
     async def get_run(self, run_id: str) -> RunView:
         """Return the state of the run and the identity of its device.
 

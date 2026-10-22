@@ -754,7 +754,8 @@ arrives in a later Phase 1 release.
 - An error is an RFC 9457 `application/problem+json` document with a stable
   `type`, such as `urn:hco-core:problem:device-not-found`. It never shows a
   config text, a `metadata` value, or a database URL. A run error shows a URL
-  with no user or password, and each error has 500 characters or fewer.
+  with no user information, an absolute path as its base name only, and 500
+  characters or fewer.
 - A request that changes data needs the `X-HCO-Actor` header. Without it, the
   API returns 401. Send the name as UTF-8. The API stores its NFKC form, and
   the name follows the rule of `ApprovalService`.
@@ -794,6 +795,17 @@ curl -s -X POST -H 'X-HCO-Actor: alice' -H 'Content-Type: application/json' \
 curl -s localhost:8080/api/v1/runs/<run_id>
 curl -s localhost:8080/api/v1/runs/<run_id>/diff
 ```
+
+With no assessment layer, the run parks at `AWAITING_APPROVAL` with the tier
+`HIGH`, and `unknowns` gives the reason:
+
+```json
+{"state": "AWAITING_APPROVAL", "risk_tier_final": "HIGH", "unknowns": ["no risk assessment"]}
+```
+
+`unknowns` is `null` when the run has no checkpoint yet. A review that fails to
+start ends in `BLOCKED`, with an error that names the server log line
+`run_failed`.
 
 The mock connection reads the running config of device `r1` from
 `transcripts/r1/running.txt`, with the credentials of the `env` provider, for
