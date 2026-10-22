@@ -971,10 +971,11 @@ except `db upgrade`, and it never writes to a device.
   the future config.
 - An error is one sentence on stderr, and the exit code is 1. With `--json`,
   stdout also gets the problem document. A message never shows a password
-  from `HCO_API_URL`.
+  from `HCO_API_URL` or `HCO_DATABASE_URL`.
 - The CLI removes control characters from each text of the API before it
   prints it.
-- These commands read only `HCO_API_URL` and `HCO_ACTOR`.
+- The commands of the API read only `HCO_API_URL` and `HCO_ACTOR`.
+  `db upgrade` and `serve api` read all the `HCO_` settings.
 
 With the API from "The REST API" on port 8080, Alice requests a run, and Bob
 and Carol approve it:
