@@ -1,3 +1,1 @@
-Added `POST /api/v1/approvals/{id}/decide`, the one place where the API approves a change. When the approvals reach the quorum, the parked run continues to `APPROVED`.
-Added `GET /api/v1/approvals` and `GET /api/v1/approvals/{id}`, which show the pending requests, the decisions, and the run state.
-Added `POST /api/v1/approvals/{id}/cancel`. It closes a request with no decision, and the parked run ends in `BLOCKED`.
+Added a cancel to the approval service. It closes a pending request with no decision, and a parked run then ends in `BLOCKED`.

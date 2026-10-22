@@ -34,7 +34,11 @@ CANCEL_PAYLOAD: Final = {
     "actor": GRAPH_ACTOR.name,
     "comment": "the approval request was cancelled",
 }
-"""The resume payload of a cancel. `record_decision` reads the request and blocks the run."""
+"""The resume payload of a cancel. `record_decision` reads the request and blocks the run.
+
+The "reject" only passes the payload schema of the graph and never decides.
+An optional `_Resume.decision` in the review graph is the cleaner fix, deferred.
+"""
 
 
 class NotParkedError(RuntimeError):

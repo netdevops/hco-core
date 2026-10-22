@@ -695,6 +695,8 @@ only in tests.
 - `review_with_resume(settings, sessions, review)` builds the review
   dependencies with an approval service whose `resume` callback is
   `RunResumer.resume_closed`. Each closed request resumes its run one time.
+  After a cancel, a parked run ends in `BLOCKED`, and a run that is not
+  parked keeps its state.
 
 ```python
 import asyncio
