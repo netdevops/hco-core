@@ -10,10 +10,10 @@ PSYCOPG_SCHEME = "postgresql+psycopg://"
 _PLAIN_SCHEMES = ("postgresql://", "postgres://")
 
 
-class CoreSettings(BaseSettings):
-    """Hold the settings that every hco-core process shares.
+class ClientSettings(BaseSettings):
+    """Hold the settings of a client of the REST API: its URL and the actor.
 
-    A validation error never shows the input, because a database URL holds a
+    A validation error never shows the input, because a URL can hold a
     password.
     """
 
@@ -25,6 +25,17 @@ class CoreSettings(BaseSettings):
         hide_input_in_errors=True,
     )
 
+    api_url: str = "http://localhost:8080"
+    actor: str | None = None
+
+
+class CoreSettings(ClientSettings):
+    """Hold the settings that every hco-core process shares.
+
+    A validation error never shows the input, because a database URL holds a
+    password.
+    """
+
     database_url: SecretStr = SecretStr(f"{PSYCOPG_SCHEME}hco:hco@localhost:5432/hco")
     log_level: Literal["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"] = "INFO"
     log_format: Literal["json", "console"] = "json"
@@ -32,8 +43,6 @@ class CoreSettings(BaseSettings):
     sot_path: Path = Path("inventory.yaml")
     connection: str = "mock"
     transcripts_dir: Path = Path("transcripts")
-    api_url: str = "http://localhost:8080"
-    actor: str | None = None
     validation_key: SecretStr | None = None
 
     @field_validator("log_level", mode="before")
