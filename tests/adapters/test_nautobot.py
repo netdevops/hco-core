@@ -1,8 +1,11 @@
 """The Nautobot source of truth reads Nautobot 2.x over GraphQL and REST, only."""
 
 import asyncio
+import copy
 import errno
 import json
+import pickle  # ruff: ignore[suspicious-pickle-import]
+import time
 from collections.abc import AsyncIterator, Callable, Mapping
 from pathlib import Path
 
@@ -44,6 +47,9 @@ DEEP_MAPPINGS = json.dumps(
         }
     }
 ).encode()
+
+MAX_SECONDS = 2.0
+"""The time bound of a hostile answer. It is generous for a slow CI runner."""
 
 type Handler = Callable[[httpx.Request], httpx.Response]
 
@@ -495,12 +501,13 @@ def test_a_bad_url_or_token_is_refused(url: str, token: str, problem: str) -> No
     [
         [{"device": {"id": EDGE_2}, "intended_config": "hostname OTHER"}],
         [{"intended_config": "hostname NO-DEVICE"}],
+        [{"device": {"id": "not-a-uuid"}, "intended_config": "hostname BAD-ID"}],
         [
             {"device": {"id": EDGE_1}, "intended_config": "hostname ONE"},
             {"device": {"id": EDGE_1}, "intended_config": "hostname TWO"},
         ],
     ],
-    ids=["other-device", "no-device", "two-rows"],
+    ids=["other-device", "no-device", "bad-id", "two-rows"],
 )
 def test_intended_config_refuses_a_row_that_is_not_the_device(
     rows: list[dict[str, object]],
@@ -543,7 +550,50 @@ def test_turning_off_tls_verification_logs_a_warning() -> None:
 
 
 def test_an_unclosed_deep_answer_is_refused() -> None:
-    """Brackets that never close are refused; the message depends on `json`."""
+    """Brackets that never close are refused before `json` reads them."""
     sot = adapter(answer(200, b"[" * 100_000))
-    with pytest.raises(InvalidInventoryError, match=r"nested|not valid JSON"):
+    with pytest.raises(InvalidInventoryError, match="nested"):
         asyncio.run(sot.list_devices())
+
+
+@pytest.mark.parametrize(
+    ("body", "problem"),
+    [
+        (b'"' + b'\\"' * 40_000, "not valid JSON"),
+        (b"[" * (8 * 1024 * 1024) + b"]" * (8 * 1024 * 1024), "nested"),
+    ],
+    ids=["unclosed-quotes", "16-mib-brackets"],
+)
+def test_a_hostile_answer_is_refused_in_linear_time(body: bytes, problem: str) -> None:
+    """The depth check reads each byte once, so a hostile answer costs little."""
+    started = time.perf_counter()
+    with pytest.raises(InvalidInventoryError, match=problem):
+        asyncio.run(adapter(answer(200, body)).list_devices())
+    assert time.perf_counter() - started < MAX_SECONDS
+
+
+def test_brackets_inside_strings_and_escapes_do_not_count() -> None:
+    """A bracket in a string, also after an escaped quote, is not nesting."""
+    devices = page_of("devices_page.json")
+    devices[0]["name"] = 'edge \\"[' + "[" * 100 + '"'
+    body = json.dumps({"data": {"devices": devices}}).encode()
+    page = asyncio.run(adapter(answer(200, body)).list_devices())
+    assert len(page.devices) == len(devices)
+
+
+def test_the_unreachable_error_survives_pickle_and_copy() -> None:
+    """A copy keeps the message and the errno."""
+    error = SourceOfTruthUnreachableError("Nautobot does not answer", errno.EACCES)
+    for twin in (pickle.loads(pickle.dumps(error)), copy.copy(error)):  # ruff: ignore[suspicious-pickle-usage]
+        assert (str(twin), twin.errno) == (str(error), errno.EACCES)
+
+
+def test_the_golden_config_device_id_is_compared_as_a_uuid() -> None:
+    """The same UUID in upper case is the same device."""
+    rows = [
+        {"device": {"id": GROUP_ONLY.upper()}, "intended_config": "hostname edge-1"}
+    ]
+    body = json.dumps({"count": 1, "results": rows}).encode()
+    intended = asyncio.run(adapter(answer(200, body)).intended_config(GROUP_ONLY))
+    assert intended is not None
+    assert intended.body == "hostname edge-1"

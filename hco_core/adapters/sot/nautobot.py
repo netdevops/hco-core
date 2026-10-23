@@ -4,6 +4,7 @@ The query shapes target Nautobot 2.1 to 2.4 and the Golden Config app 2.x.
 The adapter only reads: each request is a GET, or a POST of a GraphQL query.
 """
 
+import asyncio
 import errno
 import ipaddress
 import json
@@ -86,9 +87,9 @@ BAD_ADDRESS: Final = "the primary IPv4 address is not valid"
 CONTROL_CHARACTER: Final = (
     "a name, a role, a location, or a tag holds a control character"
 )
-_STRINGS = re.compile(rb'"[^"\\]*(?:\\.[^"\\]*)*"')
-_INNERMOST = re.compile(rb"\[\]|\{\}")
-_NOT_BRACKETS = bytes(range(256)).translate(None, b"[]{}")
+_JSON_TOKENS = re.compile(rb'["\\\[\]{}]')
+_QUOTE, _BACKSLASH = ord('"'), ord("\\")
+_OPENERS, _CLOSERS = frozenset(b"[{"), frozenset(b"]}")
 _log = structlog.get_logger(__name__)
 
 
@@ -312,8 +313,10 @@ class NautobotSourceOfTruth:
         body = await self._request(
             "GET", GOLDEN_CONFIG_PATH, params={"device_id": device_id}
         )
-        rows = _parse(body, _GoldenConfigs).results
-        others = sum(row.device is None or row.device.id != device_id for row in rows)
+        rows = (await asyncio.to_thread(_parse, body, _GoldenConfigs)).results
+        others = sum(
+            row.device is None or not _same_id(row.device.id, device_id) for row in rows
+        )
         if others or len(rows) > 1:
             message = (
                 f"the Golden Config answer for device {device_id!r} has {len(rows)} "
@@ -423,7 +426,7 @@ class NautobotSourceOfTruth:
         body = await self._request(
             "POST", GRAPHQL_PATH, payload={"query": query, "variables": variables}
         )
-        answer = _parse(body, _GraphQL)
+        answer = await asyncio.to_thread(_parse, body, _GraphQL)
         if answer.errors or answer.data is None or answer.data.devices is None:
             message = (
                 f"Nautobot refused the query with {len(answer.errors or ())} errors; "
@@ -539,8 +542,6 @@ def _parse[M: _Answer](body: bytes, model: type[M]) -> M:
     except UnicodeDecodeError:
         message = "the Nautobot answer is not UTF-8 text"
         raise InvalidInventoryError(message) from None
-    except RecursionError:
-        raise InvalidInventoryError(nested) from None
     except ValueError:
         message = "the Nautobot answer is not valid JSON"
         raise InvalidInventoryError(message) from None
@@ -556,16 +557,38 @@ def _parse[M: _Answer](body: bytes, model: type[M]) -> M:
 def _too_deep(body: bytes) -> bool:
     """Return True if the JSON text nests lists and objects past `MAX_DEPTH`.
 
-    The check removes the strings, then each innermost pair of brackets, one
-    level at a time. It does not depend on the depth limit of `json`.
+    One scan reads each quote, backslash, and bracket once, and stops at the
+    first level past the limit. It does not depend on the depth limit of `json`.
     """
-    brackets = _STRINGS.sub(b"", body).translate(None, _NOT_BRACKETS)
-    for _ in range(MAX_DEPTH + 1):
-        inner = _INNERMOST.sub(b"", brackets)
-        if inner == brackets:
-            return False
-        brackets = inner
-    return True
+    depth = 0
+    in_string = False
+    escaped = -1
+    for token in _JSON_TOKENS.finditer(body):
+        position = token.start()
+        character = body[position]
+        if position == escaped:
+            continue
+        if in_string:
+            if character == _BACKSLASH:
+                escaped = position + 1
+            in_string = character != _QUOTE
+        elif character == _QUOTE:
+            in_string = True
+        elif character in _OPENERS:
+            depth += 1
+            if depth > MAX_DEPTH:
+                return True
+        elif character in _CLOSERS:
+            depth -= 1
+    return False
+
+
+def _same_id(row_id: str, device_id: str) -> bool:
+    """Return True if both ids are one UUID. A row id that is not a UUID is not."""
+    try:
+        return uuid.UUID(row_id) == uuid.UUID(device_id)
+    except ValueError:
+        return False
 
 
 def _problems(error: ValidationError) -> str:
