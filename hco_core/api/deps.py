@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from hco_core.adapters import registry
 from hco_core.db.session import create_database_engine, create_sessionmaker
 from hco_core.db.types import ULID_LENGTH
+from hco_core.engine.validation import MIN_KEY_BYTES
 from hco_core.graphs.review import ApprovalDeps, AssessmentHook
 from hco_core.services.ledger import NotificationLedger
 from hco_core.services.resume import review_with_resume
@@ -32,6 +33,17 @@ class MissingValidationKeyError(ValueError):
 
     def __init__(self) -> None:
         super().__init__("set HCO_VALIDATION_KEY to at least 32 random bytes")
+
+
+class ShortValidationKeyError(ValueError):
+    """`HCO_VALIDATION_KEY` is shorter than `MIN_KEY_BYTES`."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            f"HCO_VALIDATION_KEY must have at least {MIN_KEY_BYTES} bytes; "
+            'make a new key with: python -c "import secrets; '
+            'print(secrets.token_hex(32))"'
+        )
 
 
 class DevelopmentKeyError(ValueError):
@@ -70,12 +82,16 @@ def validation_key(settings: CoreSettings) -> bytes:
 
     Raises:
         MissingValidationKeyError: If `HCO_VALIDATION_KEY` is not set.
+        ShortValidationKeyError: If the key is shorter than `MIN_KEY_BYTES`.
 
     """
     if settings.validation_key is None:
         raise MissingValidationKeyError
     refuse_development_key(settings)
-    return settings.validation_key.get_secret_value().encode()
+    key = settings.validation_key.get_secret_value().encode()
+    if len(key) < MIN_KEY_BYTES:
+        raise ShortValidationKeyError
+    return key
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

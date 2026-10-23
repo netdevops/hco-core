@@ -23,12 +23,15 @@ import uvicorn
 from pydantic import BaseModel, ValidationError
 from pydantic_settings import BaseSettings
 
+from hco_core.adapters.errors import AdapterConfigError
+from hco_core.api.app import create_app
 from hco_core.api.deps import (
     MAX_PAGE,
     DevelopmentKeyError,
     MissingValidationKeyError,
+    ShortValidationKeyError,
+    build_deps,
     refuse_development_key,
-    validation_key,
 )
 from hco_core.api.errors import failure_reason
 from hco_core.api.routers.approvals import ApprovalDetail, ApprovalPage
@@ -39,10 +42,10 @@ from hco_core.db import migrate
 from hco_core.domain.approval import Decision, RunState
 from hco_core.graphs.checkpointer import setup_checkpointer
 from hco_core.lint import interrupts
+from hco_core.logging import configure_logging
 from hco_core.services.approval import is_valid_name
 from hco_core.settings import ClientSettings, CoreSettings
 
-APP_FACTORY: Final = "hco_core.api.app:app_from_env"
 POLL_SECONDS: Final = 0.5
 WORKING_STATES: Final = frozenset(
     {
@@ -435,11 +438,19 @@ def serve_api(
     ] = 8080,
 ) -> None:
     """Start the REST API. It reads the HCO_ variables and needs HCO_VALIDATION_KEY."""
+    settings = load_settings(CoreSettings)
     try:
-        validation_key(load_settings(CoreSettings))
-    except (MissingValidationKeyError, DevelopmentKeyError) as error:
+        application = create_app(settings, build_deps(settings))
+    except (
+        MissingValidationKeyError,
+        ShortValidationKeyError,
+        DevelopmentKeyError,
+    ) as error:
         _fail(str(error))
-    uvicorn.run(APP_FACTORY, factory=True, host=host, port=port)
+    except AdapterConfigError as error:
+        _fail(f"{error}; check HCO_SOT, HCO_SOT_PATH, and HCO_CONNECTION")
+    configure_logging(settings)
+    uvicorn.run(application, host=host, port=port)
 
 
 @app.command("lint-interrupts")

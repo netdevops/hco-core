@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+from fastapi import FastAPI
 from sqlalchemy import Engine, inspect
 from typer.testing import CliRunner
 
@@ -17,11 +18,14 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture
-def served(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict[str, object]]]:
+def served(
+    monkeypatch: pytest.MonkeyPatch, restore_logging: None
+) -> list[tuple[object, dict[str, object]]]:
     """Record each call of `uvicorn.run` in place of a server."""
-    calls: list[tuple[str, dict[str, object]]] = []
+    del restore_logging
+    calls: list[tuple[object, dict[str, object]]] = []
 
-    def run(target: str, **options: object) -> None:
+    def run(target: object, **options: object) -> None:
         calls.append((target, options))
 
     monkeypatch.setattr(cli.uvicorn, "run", run)
@@ -60,9 +64,9 @@ def test_db_upgrade_failure_names_the_setting_and_hides_the_password() -> None:
 
 
 def test_serve_api_starts_uvicorn_with_the_app_factory(
-    served: list[tuple[str, dict[str, object]]],
+    served: list[tuple[object, dict[str, object]]],
 ) -> None:
-    """The API listens on the loopback address by default."""
+    """The API is built before uvicorn starts, on the loopback address by default."""
     env = {"HCO_VALIDATION_KEY": KEY}
     default = CliRunner().invoke(cli.app, ["serve", "api"], env=env)
     chosen = CliRunner().invoke(
@@ -70,10 +74,11 @@ def test_serve_api_starts_uvicorn_with_the_app_factory(
     )
 
     assert default.exit_code == chosen.exit_code == 0
-    assert served == [
-        (cli.APP_FACTORY, {"factory": True, "host": "127.0.0.1", "port": 8080}),
-        (cli.APP_FACTORY, {"factory": True, "host": ALL_INTERFACES, "port": 9000}),
+    assert [options for _, options in served] == [
+        {"host": "127.0.0.1", "port": 8080},
+        {"host": ALL_INTERFACES, "port": 9000},
     ]
+    assert all(isinstance(target, FastAPI) for target, _ in served)
 
 
 @pytest.mark.parametrize(
@@ -91,10 +96,15 @@ def test_serve_api_starts_uvicorn_with_the_app_factory(
             },
             "HCO_CONNECTION",
         ),
+        ({"HCO_VALIDATION_KEY": KEY, "HCO_CONNECTION": "scrapli"}, "HCO_CONNECTION"),
+        ({"HCO_VALIDATION_KEY": KEY, "HCO_SOT": "nautobotx"}, "HCO_SOT"),
+        ({"HCO_VALIDATION_KEY": "abc"}, "HCO_VALIDATION_KEY"),
     ],
 )
 def test_serve_api_stops_with_one_sentence_on_a_bad_setting(
-    served: list[tuple[str, dict[str, object]]], env: dict[str, str | None], named: str
+    served: list[tuple[object, dict[str, object]]],
+    env: dict[str, str | None],
+    named: str,
 ) -> None:
     """No server starts, and no traceback or secret is printed."""
     result = CliRunner().invoke(cli.app, ["serve", "api"], env=env)
