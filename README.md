@@ -334,8 +334,8 @@ them for development and for tests.
 - `EnvSecretsProvider()` reads credentials from environment variables.
 - `MockConnectionDriver(transcripts_dir, token_key=key)` replays transcripts.
 - `LogChannel()` writes each notification to the log.
-- `hco_core.adapters.registry` selects an adapter by its name: `yaml`, `env`,
-  `mock`, or `log`. It holds built-in factories only. An unknown name gives an error
+- `hco_core.adapters.registry` selects an adapter by its name: `yaml`,
+  `nautobot`, `env`, `mock`, or `log`. It holds built-in factories only. An unknown name gives an error
   that lists the known names.
 
 An inventory file holds devices and topology:
@@ -390,6 +390,63 @@ for each command, such as `show_version.txt`.
 - `apply()` verifies the validation token, then always raises
   `DeviceWritesDisabledError`. Phase 4 adds device writes.
 
+## Nautobot
+
+`NautobotSourceOfTruth` reads devices, intended configs, and topology from
+Nautobot. It only reads. It never writes to Nautobot.
+
+The request shapes target Nautobot 2.1 to 2.4 with the Golden Config app 2.x.
+The tests use recorded answers, not a live Nautobot. Do a check against your
+own Nautobot before you trust the adapter.
+
+Point hco-core at a Nautobot with these variables. Use a read-only API token.
+
+```bash
+export HCO_SOT=nautobot
+export HCO_NAUTOBOT_URL=https://nautobot.example.com
+export HCO_NAUTOBOT_TOKEN=<a read-only Nautobot API token>
+```
+
+The adapter reads these Nautobot objects:
+
+- Devices, with one GraphQL query (`POST /api/graphql/`) for each page of 500
+  devices or fewer: the name, the platform, the role, the location, the tags,
+  the primary IPv4 address, and the cable peer of each interface.
+- The platform name, from `platform.network_driver_mappings["hier_config"]`,
+  such as `ios` or `eos`. Set the network driver of each platform in Nautobot.
+- The intended config of the Golden Config app, from
+  `GET /api/plugins/golden-config/golden-config/?device_id=<id>`.
+- The config context of a device, with a GraphQL query.
+- Redundancy groups, from tags. The tag `hco-redundancy-core` puts each
+  device with that tag in the group `core`.
+- `GET /api/status/` for `health()`.
+
+The adapter never does these things:
+
+- It never sends a PUT, a PATCH, or a DELETE. Each POST is a GraphQL query.
+- It never reads a secret from Nautobot. `secret_ref()` returns the reference
+  `nautobot`, `<device id>:<purpose>`. The `env` provider cannot resolve it.
+- It never treats a device as GENERIC. A device with no platform, with no
+  `hier_config` mapping, with a mapping to GENERIC, or with no valid primary
+  IPv4 address is not in the page. `DevicePage.skipped` gives its name and
+  the reason.
+
+Know these limits:
+
+- The device id is the Nautobot UUID.
+- The selector applies after the query, so a page can hold fewer devices than
+  the limit.
+- Only a cable between two interfaces becomes a topology edge. The adapter
+  does not read circuits.
+- An answer larger than 16 MiB, nested more than 32 levels, not UTF-8, or not
+  of the expected shape is an error. An error never quotes Nautobot text.
+- A 401, a 403, another status that is not 2xx, or no answer raises
+  `SourceOfTruthUnreachableError`, an `OSError`. A device sync then answers
+  503.
+- The token is never in a log line, in `repr()`, or in an error. The adapter
+  drops a user name and a password in `HCO_NAUTOBOT_URL`, and it does not
+  follow a redirect.
+
 ## Database and settings
 
 `hco_core.db` holds the Postgres schema of hco-core. It has eight tables in
@@ -432,9 +489,14 @@ one with its default.
 | `HCO_API_URL` | `http://localhost:8080` |
 | `HCO_ACTOR` | not set |
 | `HCO_VALIDATION_KEY` | not set |
+| `HCO_NAUTOBOT_URL` | not set |
+| `HCO_NAUTOBOT_TOKEN` | not set |
+| `HCO_NAUTOBOT_VERIFY_SSL` | `true` |
+| `HCO_NAUTOBOT_TIMEOUT` | `30` seconds |
+| `HCO_NAUTOBOT_REDUNDANCY_TAG_PREFIX` | `hco-redundancy-` |
 
 - A `postgresql://` URL gets the psycopg dialect, `postgresql+psycopg://`.
-- `HCO_DATABASE_URL` and `HCO_VALIDATION_KEY` are secret. A printed settings
+- `HCO_DATABASE_URL`, `HCO_VALIDATION_KEY`, and `HCO_NAUTOBOT_TOKEN` are secret. A printed settings
   object and a settings error do not show them.
 - `hco_core.logging.configure_logging(settings)` sends structlog and
   standard-library log lines to stdout, as JSON or for a console.
@@ -811,7 +873,8 @@ request closes.
 - A sync writes the devices in chunks of 1000 rows, in one transaction.
 - A sync adds and updates devices. It does not remove a device that is no
   longer in the inventory.
-- A 503 names the setting to check, `HCO_SOT_PATH` or `HCO_DATABASE_URL`. The
+- A 503 names the setting to check, `HCO_SOT_PATH`, `HCO_NAUTOBOT_URL` and
+  `HCO_NAUTOBOT_TOKEN`, or `HCO_DATABASE_URL`. The
   server log line `request_failed` gives the `cause` and the `reason`.
 
 WARNING: Any client can send any name in `X-HCO-Actor`. It is a development
