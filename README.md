@@ -335,8 +335,8 @@ them for development and for tests.
 - `MockConnectionDriver(transcripts_dir, token_key=key)` replays transcripts.
 - `LogChannel()` writes each notification to the log.
 - `hco_core.adapters.registry` selects an adapter by its name: `yaml`,
-  `nautobot`, `env`, `mock`, or `log`. It holds built-in factories only. An unknown name gives an error
-  that lists the known names.
+  `nautobot`, `env`, `mock`, `scrapli`, or `log`. It holds built-in factories
+  only. An unknown name gives an error that lists the known names.
 
 An inventory file holds devices and topology:
 
@@ -491,6 +491,36 @@ WARNING: `HCO_NAUTOBOT_VERIFY_SSL=false` stops the check of the TLS
 certificate, so the token can go to a host that is not your Nautobot. Use it
 only in a lab. The adapter logs `nautobot_tls_verification_disabled` when you
 set it.
+
+## scrapli
+
+`ScrapliConnectionDriver(token_key=key)` reads from a device over SSH with
+[scrapli](https://github.com/carlmontanari/scrapli). Install the extra with
+`pip install hco-core[scrapli]` and set `HCO_CONNECTION=scrapli`. The driver
+reads only. Phase 4 adds device writes.
+
+- The driver supports `CISCO_IOS`, `CISCO_NXOS`, `CISCO_XR`, and `ARISTA_EOS`
+  in the CLI format, with the scrapli platforms `cisco_iosxe`, `cisco_nxos`,
+  `cisco_iosxr`, and `arista_eos`.
+- The session connects to `mgmt_address` on port 22 with the system transport,
+  so the `ssh` command of the host makes the connection. The transport checks
+  the host key. Add the key of the device to the known hosts of the user that
+  runs hco-core before the first session.
+- The credentials come from the `SecretsProvider`: the user name, the password,
+  and the enable secret. A private key is not used in this phase.
+- `fetch_running()` sends `show running-config`. `config_fingerprint()` sends
+  the fingerprint command of the platform table. `collect_state()` refuses a
+  command that is not on the read-only allowlist of the platform, before it
+  sends any command.
+- `dry_run()` reports no support. `apply()` verifies the validation token
+  against the running config of the device, then always raises
+  `DeviceWritesDisabledError`. `confirm()` and `rollback()` raise the same.
+- A connection or command error raises `DeviceUnreachableError` and logs
+  `device_unreachable`. The message names the device and the scrapli error.
+  It never holds a credential, and it never quotes device output.
+- Device output is untrusted. An answer above 16 MiB is an error.
+- The driver needs scrapli 2025.1.30 or later, below 2026. The 2026 releases
+  of scrapli have a different API.
 
 ## Database and settings
 

@@ -30,6 +30,8 @@ Permissive (MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, PSF-2.0)
   httpx              BSD-3-Clause         https://github.com/encode/httpx
       with httpcore (BSD-3-Clause), h11 (MIT), anyio (MIT), and idna
       (BSD-3-Clause)
+  scrapli            MIT                  https://github.com/carlmontanari/scrapli
+      optional, the [scrapli] extra; it has no required runtime dependency
 
 These impose no obligation beyond attribution.
 
