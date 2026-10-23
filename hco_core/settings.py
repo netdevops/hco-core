@@ -8,6 +8,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PSYCOPG_SCHEME = "postgresql+psycopg://"
 _PLAIN_SCHEMES = ("postgresql://", "postgres://")
+DEVELOPMENT_VALIDATION_KEY = "development-only-validation-key-0123456789"
+"""The public key in development/.env. Only the mock connection accepts it."""
 
 
 class ClientSettings(BaseSettings):

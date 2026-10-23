@@ -8,9 +8,24 @@ from typer.testing import CliRunner
 
 from hco_core.cli import app as cli
 from hco_core.db.models import CHECKPOINT_TABLES, SCHEMA
+from hco_core.settings import DEVELOPMENT_VALIDATION_KEY
 from tests.conftest import TABLES
 
 ALL_INTERFACES = "0.0.0.0"  # ruff: ignore[hardcoded-bind-all-interfaces]
+KEY = "k" * 32
+ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.fixture
+def served(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict[str, object]]]:
+    """Record each call of `uvicorn.run` in place of a server."""
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def run(target: str, **options: object) -> None:
+        calls.append((target, options))
+
+    monkeypatch.setattr(cli.uvicorn, "run", run)
+    return calls
 
 
 def test_db_upgrade_makes_the_tables_and_the_checkpointer_tables(
@@ -45,26 +60,83 @@ def test_db_upgrade_failure_names_the_setting_and_hides_the_password() -> None:
 
 
 def test_serve_api_starts_uvicorn_with_the_app_factory(
-    monkeypatch: pytest.MonkeyPatch,
+    served: list[tuple[str, dict[str, object]]],
 ) -> None:
     """The API listens on the loopback address by default."""
-    calls: list[tuple[str, dict[str, object]]] = []
-
-    def run(target: str, **options: object) -> None:
-        calls.append((target, options))
-
-    monkeypatch.setattr(cli.uvicorn, "run", run)
-
-    default = CliRunner().invoke(cli.app, ["serve", "api"])
+    env = {"HCO_VALIDATION_KEY": KEY}
+    default = CliRunner().invoke(cli.app, ["serve", "api"], env=env)
     chosen = CliRunner().invoke(
-        cli.app, ["serve", "api", "--host", ALL_INTERFACES, "--port", "9000"]
+        cli.app, ["serve", "api", "--host", ALL_INTERFACES, "--port", "9000"], env=env
     )
 
     assert default.exit_code == chosen.exit_code == 0
-    assert calls == [
+    assert served == [
         (cli.APP_FACTORY, {"factory": True, "host": "127.0.0.1", "port": 8080}),
         (cli.APP_FACTORY, {"factory": True, "host": ALL_INTERFACES, "port": 9000}),
     ]
+
+
+@pytest.mark.parametrize(
+    ("env", "named"),
+    [
+        ({"HCO_VALIDATION_KEY": None}, "HCO_VALIDATION_KEY"),
+        (
+            {"HCO_VALIDATION_KEY": KEY, "HCO_DATABASE_URL": "mysql://u:s3cret@h/db"},
+            "HCO_DATABASE_URL",
+        ),
+        (
+            {
+                "HCO_VALIDATION_KEY": DEVELOPMENT_VALIDATION_KEY,
+                "HCO_CONNECTION": "scrapli",
+            },
+            "HCO_CONNECTION",
+        ),
+    ],
+)
+def test_serve_api_stops_with_one_sentence_on_a_bad_setting(
+    served: list[tuple[str, dict[str, object]]], env: dict[str, str | None], named: str
+) -> None:
+    """No server starts, and no traceback or secret is printed."""
+    result = CliRunner().invoke(cli.app, ["serve", "api"], env=env)
+
+    assert result.exit_code == 1
+    assert served == []
+    assert named in result.output
+    assert "s3cret" not in result.output
+    assert result.output.count("\n") == 1
+
+
+def test_db_upgrade_refuses_the_development_key_with_a_real_connection() -> None:
+    """The refusal comes before the database is opened."""
+    result = CliRunner().invoke(
+        cli.app,
+        ["db", "upgrade"],
+        env={
+            "HCO_VALIDATION_KEY": DEVELOPMENT_VALIDATION_KEY,
+            "HCO_CONNECTION": "scrapli",
+            "HCO_DATABASE_URL": "postgresql://hco:hco@127.0.0.1:1/hco",
+        },
+    )
+
+    assert result.exit_code == 1
+    assert "HCO_CONNECTION" in result.output
+    assert "database upgrade failed" not in result.output
+
+
+def test_the_development_env_file_holds_the_refused_key() -> None:
+    """The refusal applies to the key that the repository publishes."""
+    lines = (ROOT / "development" / ".env").read_text(encoding="utf8").splitlines()
+
+    assert f"HCO_VALIDATION_KEY={DEVELOPMENT_VALIDATION_KEY}" in lines
+    assert lines[0].startswith("# WARNING:")
+
+
+def test_lint_interrupts_usage_names_the_command(tmp_path: Path) -> None:
+    """A missing path gives the usage of `hco-core lint-interrupts`."""
+    result = CliRunner().invoke(cli.app, ["lint-interrupts", str(tmp_path / "no.py")])
+
+    assert result.exit_code == 2  # ruff: ignore[magic-value-comparison]
+    assert "usage: hco-core lint-interrupts <path>" in result.output
 
 
 def test_lint_interrupts_runs_the_rule(tmp_path: Path) -> None:

@@ -23,7 +23,13 @@ import uvicorn
 from pydantic import BaseModel, ValidationError
 from pydantic_settings import BaseSettings
 
-from hco_core.api.deps import MAX_PAGE
+from hco_core.api.deps import (
+    MAX_PAGE,
+    DevelopmentKeyError,
+    MissingValidationKeyError,
+    refuse_development_key,
+    validation_key,
+)
 from hco_core.api.errors import failure_reason
 from hco_core.api.routers.approvals import ApprovalDetail, ApprovalPage
 from hco_core.api.routers.devices import DevicePage, SyncResult
@@ -407,6 +413,10 @@ def db_upgrade() -> None:
     """Upgrade the schema in HCO_DATABASE_URL, then make the checkpointer tables."""
     settings = load_settings(CoreSettings)
     try:
+        refuse_development_key(settings)
+    except DevelopmentKeyError as error:
+        _fail(str(error))
+    try:
         migrate.upgrade(settings)
         asyncio.run(setup_checkpointer(settings))
     except Exception as error:  # ruff: ignore[blind-except]
@@ -425,6 +435,10 @@ def serve_api(
     ] = 8080,
 ) -> None:
     """Start the REST API. It reads the HCO_ variables and needs HCO_VALIDATION_KEY."""
+    try:
+        validation_key(load_settings(CoreSettings))
+    except (MissingValidationKeyError, DevelopmentKeyError) as error:
+        _fail(str(error))
     uvicorn.run(APP_FACTORY, factory=True, host=host, port=port)
 
 
@@ -438,7 +452,9 @@ def lint_interrupts(
         typer.Exit: With the exit code of the rule.
 
     """
-    raise typer.Exit(interrupts.main([str(path) for path in paths]))
+    raise typer.Exit(
+        interrupts.main([str(path) for path in paths], "hco-core lint-interrupts")
+    )
 
 
 def _decide(

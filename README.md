@@ -37,8 +37,10 @@ poetry run hco-core run show <run_id>
 - With no assessment layer, the risk tier is `HIGH`, so two persons who did
   not request the change must approve it. After the second approval, the run
   is `APPROVED`. No command writes to a device.
-- `development/.env` holds development values only, such as a fixed
-  `HCO_VALIDATION_KEY`. If port 8080 is in use, set `HCO_API_PORT` there and
+- WARNING: The values in `development/.env` are public. hco-core refuses its
+  `HCO_VALIDATION_KEY` with a connection other than `mock`. Make a new key
+  before you use hco-core outside this stack.
+- If port 8080 is in use, set `HCO_API_PORT` in `development/.env` and
   `HCO_API_URL` in your shell.
 
 Stop the stack and delete its data with

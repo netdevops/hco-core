@@ -25,7 +25,8 @@ from pathlib import Path
 from typing import Final
 
 INTERRUPT: Final = "interrupt"
-USAGE: Final = "usage: python -m hco_core.lint.interrupts <path> [<path> ...]\n"
+MODULE_COMMAND: Final = "python -m hco_core.lint.interrupts"
+USAGE: Final = "usage: {program} <path> [<path> ...]\n"
 EXIT_VIOLATION: Final = 1
 EXIT_USAGE: Final = 2
 
@@ -189,14 +190,17 @@ def _is_interrupt(call: ast.Call, names: frozenset[str]) -> bool:
     return isinstance(function, ast.Attribute) and function.attr == INTERRUPT
 
 
-def main(arguments: Sequence[str] | None = None) -> int:
-    """Check the paths, print each violation, and return the exit code."""
+def main(arguments: Sequence[str] | None = None, program: str = MODULE_COMMAND) -> int:
+    """Check the paths, print each violation, and return the exit code.
+
+    The usage line names `program`, the command that the reader typed.
+    """
     given = sys.argv[1:] if arguments is None else arguments
     paths = [Path(argument) for argument in given]
     missing = [str(path) for path in paths if not path.exists()]
     if not paths or missing:
         problem = f"no such path: {', '.join(missing)}\n" if missing else ""
-        sys.stderr.write(f"{problem}{USAGE}")
+        sys.stderr.write(problem + USAGE.format(program=program))
         return EXIT_USAGE
     violations = check(paths)
     sys.stdout.writelines(f"{violation}\n" for violation in violations)

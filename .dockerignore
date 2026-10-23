@@ -5,4 +5,5 @@
 .pytest_cache
 .ruff_cache
 .coverage
-.env
+**/.env
+**/creds.env
