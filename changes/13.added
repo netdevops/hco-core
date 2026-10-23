@@ -1,3 +1,3 @@
 Added a read-only Nautobot 2.x source of truth: set `HCO_SOT=nautobot`, `HCO_NAUTOBOT_URL`, and `HCO_NAUTOBOT_TOKEN`.
-Added platform names from the `hier_config` network driver mapping in Nautobot. The adapter skips a device with no mapping and never uses GENERIC.
+Added platform names from the `hier_config` network driver mapping in Nautobot. A device sync skips a device with no mapping and names it in `skipped`.
 Added redundancy groups from Nautobot tags that start with `HCO_NAUTOBOT_REDUNDANCY_TAG_PREFIX`, default `hco-redundancy-`.

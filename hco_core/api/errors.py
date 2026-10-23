@@ -18,7 +18,11 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
 from starlette.exceptions import HTTPException
 
-from hco_core.adapters.errors import DeviceNotFoundError, InvalidInventoryError
+from hco_core.adapters.errors import (
+    DeviceNotFoundError,
+    InvalidInventoryError,
+    SourceOfTruthUnreachableError,
+)
 from hco_core.engine.errors import (
     DriverMismatchError,
     EngineError,
@@ -225,11 +229,18 @@ def problem_for(_: Request, error: Exception) -> JSONResponse:
 
 
 def _cause(error: Exception) -> dict[str, str]:
-    """Return the class and a fixed reason of the cause, never its text."""
+    """Return the class and a fixed reason of the cause.
+
+    The text of the cause is only added for `SourceOfTruthUnreachableError`,
+    because that text names the setting and holds no token and no password.
+    """
     cause = error.__cause__
     if cause is None:
         return {}
-    return {"cause": type(cause).__name__, "reason": failure_reason(cause)}
+    fields = {"cause": type(cause).__name__, "reason": failure_reason(cause)}
+    if isinstance(cause, SourceOfTruthUnreachableError):
+        fields["detail"] = str(cause)
+    return fields
 
 
 def failure_reason(cause: BaseException) -> str:

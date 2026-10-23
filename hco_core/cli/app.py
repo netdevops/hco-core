@@ -409,6 +409,11 @@ def device_sync(
         result = _client(ctx, actor).post("/devices/sync", SyncResult)
     noun = "device" if result.synced == 1 else "devices"
     _show(result, f"Synced {result.synced} {noun}.", as_json=as_json)
+    if result.skipped and not as_json:
+        noun = "device" if len(result.skipped) == 1 else "devices"
+        typer.echo(f"Skipped {len(result.skipped)} {noun}:")
+        for key, reason in result.skipped.items():
+            typer.echo(f"  - {printable(f'{key}: {reason}')}")
 
 
 @db_app.command("upgrade")

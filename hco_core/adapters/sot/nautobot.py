@@ -79,6 +79,8 @@ GROUP_QUERY: Final = """query HcoGroup($tags: [String]) {
 CREDENTIAL_KEY_FIELD: Final = "hco_secret_key"
 """The config context key that names the `env` secret key of a device."""
 MAX_SECRET_KEY_LENGTH: Final = 128
+MAX_KEY_LENGTH: Final = 255
+"""The longest key of a skipped device. A longer name is cut."""
 _NOT_KEY_CHARACTERS = re.compile(r"[^A-Z0-9_]")
 NO_PLATFORM: Final = "the device has no platform"
 UNMAPPED_PLATFORM: Final = "the platform has no hier_config driver mapping"
@@ -279,7 +281,9 @@ class NautobotSourceOfTruth:
         for device in devices[:size]:
             record = _record(device)
             if isinstance(record, str):
-                skipped[_skip_key(device)] = record
+                key = _skip_key(device)
+                skipped[key] = record
+                _log.warning("device_skipped", device=key, reason=record)
             elif selector is None or selector.matches(record):
                 records.append(record)
         return DevicePage(
@@ -621,10 +625,13 @@ def _check_id(device_id: DeviceID) -> None:
 
 
 def _skip_key(device: _Device) -> str:
-    """Return the name of a skipped device, or its id if the name is not printable."""
+    """Return the name of a skipped device, or its id if the name is not printable.
+
+    The key holds at most `MAX_KEY_LENGTH` characters.
+    """
     if device.name and device.name.isprintable():
-        return device.name
-    return device.id
+        return device.name[:MAX_KEY_LENGTH]
+    return device.id[:MAX_KEY_LENGTH]
 
 
 def _record(device: _Device) -> DeviceRecord | str:
