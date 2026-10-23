@@ -335,8 +335,8 @@ them for development and for tests.
 - `MockConnectionDriver(transcripts_dir, token_key=key)` replays transcripts.
 - `LogChannel()` writes each notification to the log.
 - `hco_core.adapters.registry` selects an adapter by its name: `yaml`,
-  `nautobot`, `env`, `mock`, or `log`. It holds built-in factories only. An unknown name gives an error
-  that lists the known names.
+  `nautobot`, `env`, `mock`, `scrapli`, or `log`. It holds built-in factories
+  only. An unknown name gives an error that lists the known names.
 
 An inventory file holds devices and topology:
 
@@ -375,6 +375,8 @@ topology:
 
 The `env` provider reads `HCO_SECRET_<KEY>_USERNAME` and
 `HCO_SECRET_<KEY>_PASSWORD`, and `HCO_SECRET_<KEY>_API_KEY` for an API key.
+It also reads the optional enable secret from `HCO_SECRET_<KEY>_ENABLE`. A
+blank value is the same as no value.
 `<KEY>` is the key in upper case, with each character other than a letter or
 a digit changed to `_`. Two keys that differ only in these characters, such as
 `a-b` and `a_b`, read the same variables. An error names the variable, never
@@ -491,6 +493,51 @@ WARNING: `HCO_NAUTOBOT_VERIFY_SSL=false` stops the check of the TLS
 certificate, so the token can go to a host that is not your Nautobot. Use it
 only in a lab. The adapter logs `nautobot_tls_verification_disabled` when you
 set it.
+
+## scrapli
+
+`ScrapliConnectionDriver(token_key=key)` reads from a device over SSH with
+[scrapli](https://github.com/carlmontanari/scrapli). Install the extra with
+`pip install hco-core[scrapli]` and set `HCO_CONNECTION=scrapli`. The driver
+reads only. Phase 4 adds device writes.
+
+- The driver supports `CISCO_IOS`, `CISCO_NXOS`, `CISCO_XR`, and `ARISTA_EOS`
+  in the CLI format, with the scrapli platforms `cisco_iosxe`, `cisco_nxos`,
+  `cisco_iosxr`, and `arista_eos`.
+- The session connects to `mgmt_address` on port 22 with the system transport,
+  so the `ssh` command of the host makes the connection. The transport checks
+  the host key. Add the key of the device to the known hosts of the user that
+  runs hco-core before the first session. An address that is empty, starts
+  with `-`, or holds a space is refused before `ssh` runs.
+- One command runs at a time on a session. Two sessions to one device use two
+  connections.
+- The credentials come from the `SecretsProvider`. The `env` provider reads
+  `HCO_SECRET_<KEY>_USERNAME`, `HCO_SECRET_<KEY>_PASSWORD`, and the optional
+  `HCO_SECRET_<KEY>_ENABLE`. scrapli sends the enable secret when the login
+  user is not in privileged exec. Without `_ENABLE`, the login user needs
+  privilege 15. A private key is not used in this phase.
+- `fetch_running()` sends `show running-config`. `config_fingerprint()` sends
+  the fingerprint command of the platform table. `collect_state()` refuses a
+  command that is not on the read-only allowlist of the platform, before it
+  sends any command.
+- `dry_run()` reports no support. `apply()` verifies the validation token
+  against the running config of the device, then always raises
+  `DeviceWritesDisabledError`. `confirm()` and `rollback()` raise the same.
+- A connection or command error raises `DeviceUnreachableError`. A scrapli
+  error or an OS error also logs `device_unreachable`. A refused command or a
+  large answer gives the reason in the run only. The message names the device and the scrapli error
+  type and text, made printable and cut at 200 characters. The user name, the
+  password, and the enable secret are redacted from it. The scrapli text can
+  hold the device prompt. The message never quotes a command answer.
+- A CLI error of the platform, such as `% Invalid input detected`, counts only
+  on the first line of an answer. The same text in a description or a banner
+  does not stop a read.
+- Device output is untrusted. scrapli reads the whole answer first, and the
+  session timeout bounds that read. hco-core then refuses an answer above
+  16 MiB and never keeps it.
+- The driver needs scrapli 2025.1.30. The releases 2.0.0a1 to 2.0.0a5 and the
+  releases from 2025.8.16b1 on are a rewrite with a different API, so the
+  extra pins `>=2025.1.30,<2025.8`.
 
 ## Database and settings
 

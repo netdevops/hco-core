@@ -36,6 +36,10 @@ fastapi = "^0.128"
 uvicorn = {version = "^0.40", extras = ["standard"]}
 typer = "^0.27"
 httpx = "^0.28"
+scrapli = {version = ">=2025.1.30,<2025.8", optional = true}
+
+[tool.poetry.extras]
+scrapli = ["scrapli"]
 
 [tool.poetry.scripts]
 hco-core = "hco_core.cli.app:app"

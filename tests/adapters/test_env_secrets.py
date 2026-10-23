@@ -57,3 +57,25 @@ def test_the_process_environment_is_the_default(
     monkeypatch.setenv("HCO_SECRET_R2_PASSWORD", PASSWORD)
     credentials = asyncio.run(provider.resolve(SecretRef(provider="env", key="r2")))
     assert credentials.username == "ops"
+
+
+def test_resolve_reads_the_optional_enable_secret() -> None:
+    """`HCO_SECRET_<KEY>_ENABLE` becomes the enable secret, hidden in every text."""
+    enable = "en4ble-value"
+    provider = EnvSecretsProvider({**ENVIRON, "HCO_SECRET_LAB_1_ENABLE": enable})
+    credentials = asyncio.run(provider.resolve(SecretRef(provider="env", key="lab-1")))
+    assert credentials.enable is not None
+    assert credentials.enable.get_secret_value() == enable
+    for text in (repr(credentials), str(credentials), repr(provider)):
+        assert enable not in text
+
+
+@pytest.mark.parametrize("enable", [None, ""])
+def test_an_absent_or_blank_enable_secret_is_none(enable: str | None) -> None:
+    """Without a value in `HCO_SECRET_<KEY>_ENABLE`, the enable secret is None."""
+    environ = dict(ENVIRON)
+    if enable is not None:
+        environ["HCO_SECRET_LAB_1_ENABLE"] = enable
+    provider = EnvSecretsProvider(environ)
+    credentials = asyncio.run(provider.resolve(SecretRef(provider="env", key="lab-1")))
+    assert credentials.enable is None

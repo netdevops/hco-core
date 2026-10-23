@@ -1,0 +1,2 @@
+Added a scrapli connection driver for IOS, NX-OS, IOS-XR, and EOS. Reads only in this phase.
+Added the optional `HCO_SECRET_<KEY>_ENABLE` variable for the enable secret. Without it, the login user needs privilege 15.
