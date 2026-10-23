@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -57,6 +58,20 @@ class CoreSettings(ClientSettings):
     def upper_case_log_level(cls, value: object) -> object:
         """Accept a log level in any letter case."""
         return value.upper() if isinstance(value, str) else value
+
+    @field_validator("nautobot_url")
+    @classmethod
+    def drop_the_nautobot_userinfo(cls, value: str | None) -> str | None:
+        """Remove a user name and a password from the Nautobot URL.
+
+        The adapter sends the token, never a password, so a printed settings
+        object must not show one.
+        """
+        if value is None:
+            return None
+        parts = urlsplit(value)
+        host = parts.netloc.rpartition("@")[2]
+        return urlunsplit(parts._replace(netloc=host))
 
     @field_validator("database_url")
     @classmethod

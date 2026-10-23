@@ -152,9 +152,13 @@ def test_printed_settings_hold_no_password_and_no_validation_key(
     monkeypatch.setenv("HCO_DATABASE_URL", f"postgresql://hco:{URL_MARKER}@db/hco")
     monkeypatch.setenv("HCO_VALIDATION_KEY", VALIDATION_KEY)
     monkeypatch.setenv("HCO_NAUTOBOT_TOKEN", NAUTOBOT_TOKEN)
+    monkeypatch.setenv(
+        "HCO_NAUTOBOT_URL", f"https://admin:{URL_MARKER}@nautobot.example/nb?x=1"
+    )
 
     settings = CoreSettings()
 
+    assert settings.nautobot_url == "https://nautobot.example/nb?x=1"
     for text in (repr(settings), str(settings), settings.model_dump_json()):
         assert URL_MARKER not in text
         assert VALIDATION_KEY not in text

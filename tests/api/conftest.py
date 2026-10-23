@@ -18,6 +18,7 @@ from hco_core.api.deps import ApiDeps
 from hco_core.db.session import create_database_engine, create_sessionmaker
 from hco_core.graphs.checkpointer import setup_checkpointer
 from hco_core.graphs.review import ApprovalDeps
+from hco_core.ports import SourceOfTruth
 from hco_core.services.ledger import NotificationLedger
 from hco_core.services.resume import review_with_resume
 from hco_core.services.runs import RunRepository
@@ -107,11 +108,18 @@ def settings(database_url: str) -> CoreSettings:
 
 
 @pytest.fixture
+def sot(tmp_path: Path) -> SourceOfTruth:
+    """Give the YAML source of truth of the app. A test module can override it."""
+    return YamlSourceOfTruth(tmp_path / "inventory.yaml")
+
+
+@pytest.fixture
 def api(
     runner: asyncio.Runner,
     settings: CoreSettings,
     clean_tables: None,
     tmp_path: Path,
+    sot: SourceOfTruth,
 ) -> Iterator[Api]:
     """Give the app on the test database, with the YAML inventory and mock devices.
 
@@ -128,7 +136,7 @@ def api(
         settings,
         sessions,
         lambda approvals: ApprovalDeps(
-            sot=YamlSourceOfTruth(tmp_path / "inventory.yaml"),
+            sot=sot,
             secrets=EnvSecretsProvider(ENVIRON),
             connection=MockConnectionDriver(
                 tmp_path / "transcripts", token_key=b"k" * 32
