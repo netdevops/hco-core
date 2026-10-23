@@ -75,8 +75,8 @@ def test_serve_api_starts_uvicorn_with_the_app_factory(
 
     assert default.exit_code == chosen.exit_code == 0
     assert [options for _, options in served] == [
-        {"host": "127.0.0.1", "port": 8080},
-        {"host": ALL_INTERFACES, "port": 9000},
+        {"host": "127.0.0.1", "port": 8080, "log_config": None},
+        {"host": ALL_INTERFACES, "port": 9000, "log_config": None},
     ]
     assert all(isinstance(target, FastAPI) for target, _ in served)
 

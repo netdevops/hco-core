@@ -450,7 +450,7 @@ def serve_api(
     except AdapterConfigError as error:
         _fail(f"{error}; check HCO_SOT, HCO_SOT_PATH, and HCO_CONNECTION")
     configure_logging(settings)
-    uvicorn.run(application, host=host, port=port)
+    uvicorn.run(application, host=host, port=port, log_config=None)
 
 
 @app.command("lint-interrupts")
