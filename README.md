@@ -444,6 +444,12 @@ The adapter never does these things:
   `hier_config` mapping, with a mapping to GENERIC, or with no valid primary
   IPv4 address is not in the page. `DevicePage.skipped` gives its name and
   the reason.
+- It never stores a control character. A device whose name, role, location,
+  or tag holds one, such as a NUL or an escape, is skipped. The skipped entry
+  then uses the device id.
+- It never uses the intended config of another device. The Golden Config
+  answer must hold one row of the device, or no row. Another answer is an
+  error.
 
 Know these limits:
 
@@ -460,10 +466,19 @@ Know these limits:
   of the expected shape is an error. An error never quotes Nautobot text.
 - A 401, a 403, another status that is not 2xx, or no answer raises
   `SourceOfTruthUnreachableError`, an `OSError`. A device sync then answers
-  503.
-- The token is never in a log line, in `repr()`, or in an error. The adapter
-  drops a user name and a password in `HCO_NAUTOBOT_URL`, and it does not
-  follow a redirect.
+  503. The log line `request_failed` gives the reason: `EACCES` for a refused
+  token, `ENOENT` for a 404, `ETIMEDOUT`, `ECONNREFUSED`, `EIO`, or `EPROTO`
+  for another status.
+- A 404 from the Golden Config route says that the Golden Config app does not
+  answer.
+- The token must be printable ASCII. It is never in a log line, in `repr()`,
+  or in an error. The adapter and the settings drop a user name and a password
+  in `HCO_NAUTOBOT_URL`, and the adapter does not follow a redirect.
+
+WARNING: `HCO_NAUTOBOT_VERIFY_SSL=false` stops the check of the TLS
+certificate, so the token can go to a host that is not your Nautobot. Use it
+only in a lab. The adapter logs `nautobot_tls_verification_disabled` when you
+set it.
 
 ## Database and settings
 

@@ -1,6 +1,7 @@
 """The Nautobot source of truth reads Nautobot 2.x over GraphQL and REST, only."""
 
 import asyncio
+import errno
 import json
 from collections.abc import AsyncIterator, Callable, Mapping
 from pathlib import Path
@@ -8,6 +9,7 @@ from pathlib import Path
 import httpx
 import pytest
 from pydantic import SecretStr
+from structlog.testing import capture_logs
 
 from hco_core.adapters.errors import (
     AdapterConfigError,
@@ -166,7 +168,7 @@ def test_paging_uses_the_nautobot_offset() -> None:
     last = asyncio.run(sot.list_devices(cursor=first.cursor, limit=2))
     assert [device.id for device in last.devices] == [CORE_1]
     assert last.cursor is None
-    for cursor, limit in (("-1", 2), ("x", 2), (None, 0)):
+    for cursor, limit in (("-1", 2), ("x", 2), ("\uff11", 2), (None, 0)):
         with pytest.raises(ValueError, match=r"cursor|limit"):
             asyncio.run(sot.list_devices(cursor=cursor, limit=limit))
 
@@ -328,24 +330,60 @@ def test_a_bad_hco_secret_key_is_refused_without_its_value(value: object) -> Non
 
 
 @pytest.mark.parametrize(
-    ("status", "body", "setting"),
+    ("status", "body", "setting", "code"),
     [
-        (401, fixture("unauthorized.json"), "HCO_NAUTOBOT_TOKEN"),
-        (403, fixture("unauthorized.json"), "HCO_NAUTOBOT_TOKEN"),
-        (500, fixture("server_error.html"), "HTTP 500"),
-        (302, b"", "HTTP 302"),
+        (401, fixture("unauthorized.json"), "HCO_NAUTOBOT_TOKEN", errno.EACCES),
+        (403, fixture("unauthorized.json"), "HCO_NAUTOBOT_TOKEN", errno.EACCES),
+        (404, b"", "HTTP 404", errno.ENOENT),
+        (500, fixture("server_error.html"), "HTTP 500", errno.EPROTO),
+        (302, b"", "HTTP 302", errno.EPROTO),
     ],
 )
 def test_a_refusal_is_unreachable_and_names_the_setting(
-    status: int, body: bytes, setting: str
+    status: int, body: bytes, setting: str, code: int
 ) -> None:
-    """The error is an `OSError`, so device sync answers 503."""
+    """The error is an `OSError` with an errno, so device sync answers 503."""
     with pytest.raises(SourceOfTruthUnreachableError, match=setting) as error:
         asyncio.run(adapter(answer(status, body)).list_devices())
     assert isinstance(error.value, OSError)
+    assert error.value.errno == code
     assert error.value.__cause__ is None
     assert "nautobot.example:8443" in str(error.value)
     assert_no_leak(str(error.value))
+
+
+@pytest.mark.parametrize(
+    ("failure", "code"),
+    [
+        (httpx.ConnectError, errno.ECONNREFUSED),
+        (httpx.ReadTimeout, errno.ETIMEDOUT),
+        (httpx.RemoteProtocolError, errno.EIO),
+    ],
+)
+def test_a_transport_error_has_an_errno(
+    failure: type[httpx.TransportError], code: int
+) -> None:
+    """The errno gives the log a fixed reason for each kind of failure."""
+
+    def fail(request: httpx.Request) -> httpx.Response:
+        message = "no answer"
+        raise failure(message, request=request)
+
+    with pytest.raises(SourceOfTruthUnreachableError) as error:
+        asyncio.run(adapter(fail).list_devices())
+    assert error.value.errno == code
+
+
+def test_a_golden_config_404_names_the_app() -> None:
+    """A 404 on the Golden Config route says that the app does not answer."""
+
+    def no_app(request: httpx.Request) -> httpx.Response:
+        if request.url.path == nautobot.GOLDEN_CONFIG_PATH:
+            return httpx.Response(404)
+        return FakeNautobot()(request)
+
+    with pytest.raises(SourceOfTruthUnreachableError, match="Golden Config app"):
+        asyncio.run(adapter(no_app).intended_config(EDGE_1))
 
 
 def test_a_transport_error_hides_the_request() -> None:
@@ -369,7 +407,7 @@ def test_a_transport_error_hides_the_request() -> None:
         (b"\xff\xfe{}", "not UTF-8"),
         (b"[1, 2]", "expected shape"),
         (b'{"data": {"devices": [{"id": 7}]}}', "expected shape"),
-        (b"[" * 100_000, "nested"),
+        (b"[" * 100_000 + b"]" * 100_000, "nested"),
         (DEEP_MAPPINGS, "expected shape"),
         (fixture("graphql_errors.json"), "refused the query"),
     ],
@@ -439,11 +477,73 @@ def test_the_adapter_never_writes_to_nautobot() -> None:
         ("ftp://nautobot.example", TOKEN, "http or https"),
         ("nautobot.example", TOKEN, "http or https"),
         ("https://[::1", TOKEN, "http or https"),
-        ("https://nautobot.example", " ", "token is empty"),
+        ("https://nautobot.example", " ", "HCO_NAUTOBOT_TOKEN"),
+        ("https://nautobot.example", "t\u00e9" + TOKEN, "HCO_NAUTOBOT_TOKEN"),
+        ("https://nautobot.example", TOKEN + "\n", "HCO_NAUTOBOT_TOKEN"),
     ],
+    ids=["ftp", "no-scheme", "bad-host", "blank", "non-ascii", "newline"],
 )
 def test_a_bad_url_or_token_is_refused(url: str, token: str, problem: str) -> None:
     """The error names the problem, never the token."""
     with pytest.raises(AdapterConfigError, match=problem) as error:
         NautobotSourceOfTruth(url, SecretStr(token))
     assert_no_leak(str(error.value))
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [{"device": {"id": EDGE_2}, "intended_config": "hostname OTHER"}],
+        [{"intended_config": "hostname NO-DEVICE"}],
+        [
+            {"device": {"id": EDGE_1}, "intended_config": "hostname ONE"},
+            {"device": {"id": EDGE_1}, "intended_config": "hostname TWO"},
+        ],
+    ],
+    ids=["other-device", "no-device", "two-rows"],
+)
+def test_intended_config_refuses_a_row_that_is_not_the_device(
+    rows: list[dict[str, object]],
+) -> None:
+    """Only one row of the device itself gives an intended config."""
+    body = json.dumps({"count": len(rows), "results": rows}).encode()
+    with pytest.raises(InvalidInventoryError, match="Golden Config") as error:
+        asyncio.run(adapter(answer(200, body)).intended_config(EDGE_1))
+    assert "hostname" not in str(error.value)
+
+
+def test_a_device_with_a_control_character_is_skipped() -> None:
+    """A NUL or an escape in a text field skips the device, with a safe key."""
+    devices = page_of("devices_page.json")
+    devices[0]["name"] = "edge\x00one"
+    devices[1]["role"] = {"name": "esc\x1b[31mred"}
+    devices[2]["tags"] = [{"name": "ok"}, {"name": "bad\ttag"}]
+    body = json.dumps({"data": {"devices": devices}}).encode()
+    page = asyncio.run(adapter(answer(200, body)).list_devices())
+    assert page.devices == ()
+    assert page.skipped == {
+        EDGE_1: nautobot.CONTROL_CHARACTER,
+        "edge-2": nautobot.CONTROL_CHARACTER,
+        "core-1": nautobot.CONTROL_CHARACTER,
+    }
+
+
+def test_turning_off_tls_verification_logs_a_warning() -> None:
+    """One warning names the URL without userinfo when `verify_ssl` is False."""
+    with capture_logs() as lines:
+        NautobotSourceOfTruth(URL, SecretStr(TOKEN), verify_ssl=False)
+        NautobotSourceOfTruth(URL, SecretStr(TOKEN))
+    assert lines == [
+        {
+            "event": "nautobot_tls_verification_disabled",
+            "log_level": "warning",
+            "url": "https://nautobot.example:8443",
+        }
+    ]
+
+
+def test_an_unclosed_deep_answer_is_refused() -> None:
+    """Brackets that never close are refused; the message depends on `json`."""
+    sot = adapter(answer(200, b"[" * 100_000))
+    with pytest.raises(InvalidInventoryError, match=r"nested|not valid JSON"):
+        asyncio.run(sot.list_devices())

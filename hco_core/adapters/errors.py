@@ -16,8 +16,14 @@ class InvalidInventoryError(AdapterError):
 class SourceOfTruthUnreachableError(AdapterError, OSError):
     """The source of truth does not answer, or refuses the request.
 
-    The message names the setting to check, never a token or a request.
+    The message names the setting to check, never a token or a request. The
+    `errno` gives the log a fixed reason, such as `EACCES` for a refused token.
     """
+
+    def __init__(self, message: str, code: int) -> None:
+        """Hold the message and the errno."""
+        super().__init__(message)
+        self.errno = code
 
 
 class DeviceNotFoundError(AdapterError):

@@ -4,15 +4,18 @@ The query shapes target Nautobot 2.1 to 2.4 and the Golden Config app 2.x.
 The adapter only reads: each request is a GET, or a POST of a GraphQL query.
 """
 
+import errno
 import ipaddress
 import json
 import re
 import uuid
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
+from http import HTTPStatus
 from typing import Final, cast
 
 import httpx
+import structlog
 from pydantic import (
     ConfigDict,
     Field,
@@ -80,6 +83,13 @@ NO_PLATFORM: Final = "the device has no platform"
 UNMAPPED_PLATFORM: Final = "the platform has no hier_config driver mapping"
 NO_ADDRESS: Final = "the device has no primary IPv4 address"
 BAD_ADDRESS: Final = "the primary IPv4 address is not valid"
+CONTROL_CHARACTER: Final = (
+    "a name, a role, a location, or a tag holds a control character"
+)
+_STRINGS = re.compile(rb'"[^"\\]*(?:\\.[^"\\]*)*"')
+_INNERMOST = re.compile(rb"\[\]|\{\}")
+_NOT_BRACKETS = bytes(range(256)).translate(None, b"[]{}")
+_log = structlog.get_logger(__name__)
 
 
 class _Answer(BaseModel):
@@ -151,6 +161,7 @@ class _GraphQL(_Answer):
 
 
 class _GoldenConfig(_Answer):
+    device: _Ref | None = None
     intended_config: str | None = None
 
 
@@ -189,7 +200,7 @@ class NautobotSourceOfTruth:
 
         Raises:
             AdapterConfigError: If the URL is not an http or https URL, or the
-                token is empty.
+                token is empty or not printable ASCII.
 
         """
         try:
@@ -199,11 +210,17 @@ class NautobotSourceOfTruth:
         if parsed.scheme not in {"http", "https"} or not parsed.host:
             message = "the Nautobot URL must start with http or https and name a host"
             raise AdapterConfigError(message)
-        if not token.get_secret_value().strip():
-            message = "the Nautobot token is empty; set HCO_NAUTOBOT_TOKEN"
+        secret = token.get_secret_value()
+        if not (secret.strip() and secret.isascii() and secret.isprintable()):
+            message = (
+                "the Nautobot token must be printable ASCII and not empty; "
+                "check HCO_NAUTOBOT_TOKEN"
+            )
             raise AdapterConfigError(message)
         bare = parsed.copy_with(userinfo=b"", query=None, fragment=None)
         self._url = str(bare).rstrip("/")
+        if not verify_ssl:
+            _log.warning("nautobot_tls_verification_disabled", url=self._url)
         self._token = token
         self._verify_ssl = verify_ssl
         self._timeout = timeout
@@ -246,7 +263,9 @@ class NautobotSourceOfTruth:
                 limit is below 1.
 
         """
-        if (cursor is not None and not cursor.isdigit()) or limit < 1:
+        if (
+            cursor is not None and not (cursor.isascii() and cursor.isdigit())
+        ) or limit < 1:
             message = f"the cursor {cursor!r} or the limit {limit} is not valid"
             raise ValueError(message)
         offset = int(cursor or 0)
@@ -259,7 +278,7 @@ class NautobotSourceOfTruth:
         for device in devices[:size]:
             record = _record(device)
             if isinstance(record, str):
-                skipped[device.name or device.id] = record
+                skipped[_skip_key(device)] = record
             elif selector is None or selector.matches(record):
                 records.append(record)
         return DevicePage(
@@ -282,17 +301,29 @@ class NautobotSourceOfTruth:
         return record
 
     async def intended_config(self, device_id: DeviceID) -> ConfigDocument | None:
-        """Return the Golden Config intended config of the device, or None."""
+        """Return the Golden Config intended config of the device, or None.
+
+        Raises:
+            InvalidInventoryError: If a row is not of the device, or the device
+                has more than one row.
+
+        """
         _check_id(device_id)
         body = await self._request(
             "GET", GOLDEN_CONFIG_PATH, params={"device_id": device_id}
         )
-        answer = _parse(body, _GoldenConfigs)
-        texts = [row.intended_config for row in answer.results if row.intended_config]
-        if not texts:
+        rows = _parse(body, _GoldenConfigs).results
+        others = sum(row.device is None or row.device.id != device_id for row in rows)
+        if others or len(rows) > 1:
+            message = (
+                f"the Golden Config answer for device {device_id!r} has {len(rows)} "
+                f"rows, and {others} of them are of another device; expected one row"
+            )
+            raise InvalidInventoryError(message)
+        if not rows or not rows[0].intended_config:
             return None
         return ConfigDocument(
-            body=texts[0], collected_at=datetime.now(UTC), source="sot"
+            body=rows[0].intended_config, collected_at=datetime.now(UTC), source="sot"
         )
 
     async def config_context(self, device_id: DeviceID) -> Mapping[str, object]:
@@ -431,28 +462,46 @@ class NautobotSourceOfTruth:
                 async with client.stream(
                     method, path, params=params, json=payload
                 ) as response:
-                    self._check_status(response.status_code)
+                    self._check_status(path, response.status_code)
                     return await _bounded(response)
             except httpx.HTTPError as error:
                 message = (
                     f"Nautobot at {self._url} does not answer "
                     f"({type(error).__name__}); check HCO_NAUTOBOT_URL"
                 )
-                raise SourceOfTruthUnreachableError(message) from None
+                raise SourceOfTruthUnreachableError(
+                    message, _transport_errno(error)
+                ) from None
 
-    def _check_status(self, status: int) -> None:
+    def _check_status(self, path: str, status: int) -> None:
         if status in {httpx.codes.UNAUTHORIZED, httpx.codes.FORBIDDEN}:
             message = (
                 f"Nautobot at {self._url} refused the token with HTTP {status}; "
                 "check HCO_NAUTOBOT_TOKEN"
             )
-            raise SourceOfTruthUnreachableError(message)
+            raise SourceOfTruthUnreachableError(message, errno.EACCES)
+        if status == HTTPStatus.NOT_FOUND and path == GOLDEN_CONFIG_PATH:
+            message = (
+                f"the Golden Config app does not answer at {self._url}"
+                f"{GOLDEN_CONFIG_PATH} (HTTP 404); install the app in Nautobot"
+            )
+            raise SourceOfTruthUnreachableError(message, errno.ENOENT)
         if not httpx.codes.is_success(status):
             message = (
                 f"Nautobot at {self._url} answered HTTP {status}; "
                 "check HCO_NAUTOBOT_URL"
             )
-            raise SourceOfTruthUnreachableError(message)
+            code = errno.ENOENT if status == HTTPStatus.NOT_FOUND else errno.EPROTO
+            raise SourceOfTruthUnreachableError(message, code)
+
+
+def _transport_errno(error: httpx.HTTPError) -> int:
+    """Return the errno of a transport error, for the reason in the log."""
+    if isinstance(error, httpx.TimeoutException):
+        return errno.ETIMEDOUT
+    if isinstance(error, httpx.ConnectError):
+        return errno.ECONNREFUSED
+    return errno.EIO
 
 
 async def _bounded(response: httpx.Response) -> bytes:
@@ -483,6 +532,8 @@ def _parse[M: _Answer](body: bytes, model: type[M]) -> M:
 
     """
     nested = f"the Nautobot answer is nested more than {MAX_DEPTH} levels"
+    if _too_deep(body):
+        raise InvalidInventoryError(nested)
     try:
         value = cast("object", json.loads(body.decode("utf8")))
     except UnicodeDecodeError:
@@ -493,8 +544,6 @@ def _parse[M: _Answer](body: bytes, model: type[M]) -> M:
     except ValueError:
         message = "the Nautobot answer is not valid JSON"
         raise InvalidInventoryError(message) from None
-    if _depth(value) > MAX_DEPTH:
-        raise InvalidInventoryError(nested)
     try:
         return model.model_validate(value)
     except ValidationError as error:
@@ -504,21 +553,19 @@ def _parse[M: _Answer](body: bytes, model: type[M]) -> M:
         raise InvalidInventoryError(message) from None
 
 
-def _depth(value: object) -> int:
-    """Return the nesting depth of the value, or the first depth past `MAX_DEPTH`."""
-    deepest = 0
-    pending: list[tuple[object, int]] = [(value, 1)]
-    while pending and deepest <= MAX_DEPTH:
-        item, level = pending.pop()
-        if isinstance(item, dict):
-            children = list(cast("dict[object, object]", item).values())
-        elif isinstance(item, list):
-            children = list(cast("list[object]", item))
-        else:
-            continue
-        deepest = max(deepest, level)
-        pending.extend((child, level + 1) for child in children)
-    return deepest
+def _too_deep(body: bytes) -> bool:
+    """Return True if the JSON text nests lists and objects past `MAX_DEPTH`.
+
+    The check removes the strings, then each innermost pair of brackets, one
+    level at a time. It does not depend on the depth limit of `json`.
+    """
+    brackets = _STRINGS.sub(b"", body).translate(None, _NOT_BRACKETS)
+    for _ in range(MAX_DEPTH + 1):
+        inner = _INNERMOST.sub(b"", brackets)
+        if inner == brackets:
+            return False
+        brackets = inner
+    return True
 
 
 def _problems(error: ValidationError) -> str:
@@ -550,8 +597,19 @@ def _check_id(device_id: DeviceID) -> None:
         raise DeviceNotFoundError(message) from None
 
 
+def _skip_key(device: _Device) -> str:
+    """Return the name of a skipped device, or its id if the name is not printable."""
+    if device.name and device.name.isprintable():
+        return device.name
+    return device.id
+
+
 def _record(device: _Device) -> DeviceRecord | str:
     """Return the device record, or the reason that the device is left out."""
+    texts = [device.id, device.name or ""] + [tag.name for tag in device.tags]
+    texts += [named.name for named in (device.role, device.location) if named]
+    if not all(text.isprintable() for text in texts):
+        return CONTROL_CHARACTER
     if device.platform is None:
         return NO_PLATFORM
     mapping = device.platform.network_driver_mappings.get("hier_config")
