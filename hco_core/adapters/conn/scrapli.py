@@ -239,11 +239,11 @@ class ScrapliSession:
                 self._device, self._credentials, f"did not answer {command!r}", error
             )
         else:
-            if self._refused(response.result):
-                message = f"device {self._device.id!r} refused {command!r}"
-                raise DeviceUnreachableError(message)
             if len(response.result) > MAX_OUTPUT_CHARS:
                 message = f"device {self._device.id!r} answered {command!r} with more than {MAX_OUTPUT_CHARS} characters"
+                raise DeviceUnreachableError(message)
+            if self._refused(response.result):
+                message = f"device {self._device.id!r} refused {command!r}"
                 raise DeviceUnreachableError(message)
             return response.result
         raise DeviceUnreachableError(message)

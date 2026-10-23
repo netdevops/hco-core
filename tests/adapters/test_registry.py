@@ -30,10 +30,14 @@ def test_each_built_in_name_builds_its_adapter() -> None:
     assert isinstance(
         registry.connection("mock", options, token_key=KEY), ConnectionDriver
     )
-    pytest.importorskip("scrapli")
-    assert registry.connection("scrapli", {}, token_key=KEY).name == "scrapli"
     assert isinstance(registry.secrets("env", {}), SecretsProvider)
     assert isinstance(registry.notification_channel("log", {}), NotificationChannel)
+
+
+def test_the_scrapli_name_builds_its_adapter_when_the_extra_is_installed() -> None:
+    """`scrapli` builds the scrapli driver; without the extra, the test skips."""
+    pytest.importorskip("scrapli")
+    assert registry.connection("scrapli", {}, token_key=KEY).name == "scrapli"
 
 
 def test_an_unknown_name_lists_the_known_names() -> None:

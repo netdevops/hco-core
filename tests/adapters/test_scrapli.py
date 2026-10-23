@@ -58,9 +58,11 @@ VERSION = "Cisco IOS Software, Catalyst L3 Switch Software\n"
 TIMEOUT = 12.5
 """A session timeout that differs from every scrapli default."""
 DEFAULT_TIMEOUT = 60.0
+"""The session timeout of the port when the caller gives none."""
 CALLS_IN_ONE_COLLECT = 3
-COMMANDS_AT_ONCE = 3
 """Open, one command, and close."""
+COMMANDS_AT_ONCE = 3
+"""The concurrent awaits of the serialisation test."""
 
 
 def device(platform_name: str = IOS) -> DeviceRecord:
