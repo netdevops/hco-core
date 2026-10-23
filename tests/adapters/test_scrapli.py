@@ -42,7 +42,7 @@ TRANSCRIPTS = FIXTURES / "transcripts" / "r1"
 KEY = b"k" * 32
 IOS = "CISCO_IOS"
 PASSWORD = "p4ss-SECRET-marker"  # ruff: ignore[hardcoded-password-string]
-ENABLE = "en4ble-SECRET-marker"  # ruff: ignore[hardcoded-password-string]
+ENABLE = "en4ble-SECRET-marker"
 CREDENTIALS = DeviceCredentials(
     username="admin", password=SecretStr(PASSWORD), enable=SecretStr(ENABLE)
 )
@@ -51,12 +51,18 @@ LAST_CHANGE = "! Last configuration change at 10:00:00 UTC Fri Oct 16 2026 by ad
 VERSION = "Cisco IOS Software, Catalyst L3 Switch Software\n"
 TIMEOUT = 12.5
 """A session timeout that differs from every scrapli default."""
+DEFAULT_TIMEOUT = 60.0
+CALLS_IN_ONE_COLLECT = 3
+"""Open, one command, and close."""
 
 
 def device(platform_name: str = IOS) -> DeviceRecord:
     """Return a device record on the platform."""
     return DeviceRecord(
-        id=DeviceID("r1"), name="r1", platform_name=platform_name, mgmt_address="10.0.0.1"
+        id=DeviceID("r1"),
+        name="r1",
+        platform_name=platform_name,
+        mgmt_address="10.0.0.1",
     )
 
 
@@ -76,8 +82,8 @@ class FakeConnection:
 
     transport: "FakeTransport"
     kwargs: dict[str, object]
-    sent: list[str] = field(default_factory=list)
-    threads: list[threading.Thread] = field(default_factory=list)
+    sent: list[str] = field(default_factory=list[str])
+    threads: list[threading.Thread] = field(default_factory=list[threading.Thread])
     opened: bool = False
     closed: bool = False
 
@@ -107,20 +113,16 @@ class FakeConnection:
         response.record_response(self.transport.outputs[command].encode())
         return response
 
-    def get_prompt(self) -> str:
-        """Return the prompt of the device."""
-        return "r1#"
-
 
 @dataclass
 class FakeTransport:
     """Stand in for the `Scrapli` factory. Each call makes one `FakeConnection`."""
 
     outputs: dict[str, str] = field(default_factory=outputs)
-    failures: dict[str, Exception] = field(default_factory=dict)
+    failures: dict[str, Exception] = field(default_factory=dict[str, Exception])
     open_error: Exception | None = None
     close_error: Exception | None = None
-    connections: list[FakeConnection] = field(default_factory=list)
+    connections: list[FakeConnection] = field(default_factory=list[FakeConnection])
 
     def __call__(self, **kwargs: object) -> FakeConnection:
         """Make a connection with the arguments."""
@@ -188,7 +190,12 @@ def test_the_driver_satisfies_the_port() -> None:
     """The driver is a `ConnectionDriver` for CLI on the four scrapli platforms."""
     assert isinstance(driver(), ConnectionDriver)
     assert driver().name == "scrapli"
-    assert set(SCRAPLI_PLATFORMS) == {"CISCO_IOS", "CISCO_NXOS", "CISCO_XR", "ARISTA_EOS"}
+    assert set(SCRAPLI_PLATFORMS) == {
+        "CISCO_IOS",
+        "CISCO_NXOS",
+        "CISCO_XR",
+        "ARISTA_EOS",
+    }
     for platform_name in SCRAPLI_PLATFORMS:
         assert driver().supports(platform_name, ConfigFormat.CLI)
         assert not driver().supports(platform_name, ConfigFormat.XML)
@@ -212,12 +219,8 @@ def test_the_session_opens_scrapli_with_the_system_transport(
     """The session maps the platform, passes the credentials, and closes at the end."""
     transport.outputs = outputs(platform_name)
 
-    async def prompt_only(session: DeviceSession) -> DeviceSession:
-        return session
+    in_session(device(platform_name), lambda session: session.config_fingerprint())
 
-    session = in_session(device(platform_name), prompt_only)
-
-    assert isinstance(session, DeviceSession)
     connection = transport.connection
     assert connection.kwargs == {
         "platform": scrapli_platform,
@@ -236,11 +239,26 @@ def test_the_session_opens_scrapli_with_the_system_transport(
     assert connection.closed
 
 
+def test_the_session_satisfies_the_port(transport: FakeTransport) -> None:
+    """The open session is a `DeviceSession`."""
+
+    async def open_session() -> object:
+        async with driver().session(device(), CREDENTIALS) as session:
+            return session
+
+    assert isinstance(asyncio.run(open_session()), DeviceSession)
+    assert transport.connection.kwargs["timeout_ops"] == pytest.approx(DEFAULT_TIMEOUT)
+
+
 def test_a_credential_without_a_password_passes_empty_strings(
     transport: FakeTransport,
 ) -> None:
-    """scrapli takes an empty string, never None, for a missing secret."""
-    in_session(device(), lambda session: session.config_fingerprint(), DeviceCredentials(username="admin"))
+    """A missing secret is an empty string for scrapli, never None."""
+    in_session(
+        device(),
+        lambda session: session.config_fingerprint(),
+        DeviceCredentials(username="admin"),
+    )
 
     kwargs = transport.connection.kwargs
     assert (kwargs["auth_password"], kwargs["auth_secondary"]) == ("", "")
@@ -297,7 +315,7 @@ def test_collect_state_refuses_a_command_outside_the_allowlist(
     transport: FakeTransport, command: str
 ) -> None:
     """A command outside the allowlist is refused before any command is sent."""
-    with pytest.raises(CommandNotAllowedError, match=command.split(";")[0]):
+    with pytest.raises(CommandNotAllowedError, match=command.split(";", maxsplit=1)[0]):
         in_session(
             device(), lambda session: session.collect_state(["show version", command])
         )
@@ -310,13 +328,15 @@ def test_every_scrapli_call_runs_in_a_worker_thread(transport: FakeTransport) ->
     in_session(device(), lambda session: session.collect_state(["show version"]))
 
     threads = transport.connection.threads
-    assert len(threads) == 3
+    assert len(threads) == CALLS_IN_ONE_COLLECT
     assert all(thread is not threading.main_thread() for thread in threads)
 
 
 def test_dry_run_is_not_supported(transport: FakeTransport) -> None:
     """No scrapli platform has a dry run in this phase."""
-    plan = ApplyPlan(format=ConfigFormat.CLI, strategy=ApplyStrategy.IOS_ARCHIVE_REPLACE)
+    plan = ApplyPlan(
+        format=ConfigFormat.CLI, strategy=ApplyStrategy.IOS_ARCHIVE_REPLACE
+    )
 
     result = in_session(device(), lambda session: session.dry_run(plan))
 
@@ -342,7 +362,8 @@ def test_apply_verifies_the_token_then_refuses_to_write(
         with pytest.raises(InvalidTokenError):
             in_session(device(), lambda session, bad=bad: session.apply(bad))
     assert all(
-        connection.sent == ["show running-config"] for connection in transport.connections
+        connection.sent == ["show running-config"]
+        for connection in transport.connections
     )
 
 
@@ -361,10 +382,11 @@ def test_confirm_and_rollback_refuse_to_write(transport: FakeTransport) -> None:
     """No change exists to confirm or roll back."""
     result = ApplyResult(succeeded=False, applied_at=datetime.now(UTC))
 
-    for call in (
+    calls: tuple[Callable[[DeviceSession], Awaitable[None]], ...] = (
         lambda session: session.confirm(result),
         lambda session: session.rollback(result),
-    ):
+    )
+    for call in calls:
         with pytest.raises(DeviceWritesDisabledError):
             in_session(device(), call)
     assert all(connection.sent == [] for connection in transport.connections)
@@ -441,12 +463,14 @@ def test_output_above_the_bound_is_unreachable(
     transport: FakeTransport, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Device output is untrusted, so its size is bounded."""
-    monkeypatch.setattr(scrapli_adapter, "MAX_OUTPUT_CHARS", 16)
-    transport.outputs["show version"] = "x" * 17
+    monkeypatch.setattr(scrapli_adapter, "MAX_OUTPUT_CHARS", 64)
+    transport.outputs["show version"] = "x" * 65
 
-    with pytest.raises(DeviceUnreachableError, match="16"):
+    with pytest.raises(DeviceUnreachableError, match="64") as error:
         in_session(device(), lambda session: session.collect_state(["show version"]))
     in_session(device(), lambda session: session.collect_state(["show clock"]))
+
+    assert "xxx" not in str(error.value)
 
 
 def test_a_close_error_does_not_hide_the_result(transport: FakeTransport) -> None:
