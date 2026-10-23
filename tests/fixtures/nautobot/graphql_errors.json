@@ -1,0 +1,9 @@
+{
+  "data": {"devices": null},
+  "errors": [
+    {
+      "message": "Cannot query field \"network_driver_mappings\" on type \"PlatformType\".",
+      "locations": [{"line": 4, "column": 30}]
+    }
+  ]
+}

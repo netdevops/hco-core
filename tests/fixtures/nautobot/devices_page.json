@@ -1,0 +1,50 @@
+{
+  "data": {
+    "devices": [
+      {
+        "id": "11111111-1111-4111-8111-111111111111",
+        "name": "edge-1",
+        "platform": {
+          "name": "Cisco IOS",
+          "network_driver_mappings": {"hier_config": "ios", "netmiko": "cisco_ios", "ansible": null}
+        },
+        "role": {"name": "edge"},
+        "location": {"name": "lab"},
+        "tags": [{"name": "wan"}, {"name": "hco-redundancy-core"}],
+        "primary_ip4": {"host": "10.0.0.1"},
+        "interfaces": [
+          {"name": "Ethernet1", "cable_peer_interface": {"name": "Ethernet1", "device": {"id": "22222222-2222-4222-8222-222222222222"}}},
+          {"name": "Ethernet2", "cable_peer_interface": null}
+        ]
+      },
+      {
+        "id": "22222222-2222-4222-8222-222222222222",
+        "name": "edge-2",
+        "platform": {
+          "name": "Arista EOS",
+          "network_driver_mappings": "{\"hier_config\": \"eos\", \"netmiko\": \"arista_eos\"}"
+        },
+        "role": {"name": "edge"},
+        "location": {"name": "lab"},
+        "tags": [{"name": "hco-redundancy-core"}],
+        "primary_ip4": {"host": "10.0.0.2"},
+        "interfaces": [
+          {"name": "Ethernet1", "cable_peer_interface": {"name": "Ethernet1", "device": {"id": "11111111-1111-4111-8111-111111111111"}}}
+        ]
+      },
+      {
+        "id": "33333333-3333-4333-8333-333333333333",
+        "name": "core-1",
+        "platform": {
+          "name": "Cisco IOS-XR",
+          "network_driver_mappings": {"hier_config": "iosxr"}
+        },
+        "role": {"name": "core"},
+        "location": {"name": "dc1"},
+        "tags": [],
+        "primary_ip4": {"host": "10.0.0.3"},
+        "interfaces": []
+      }
+    ]
+  }
+}

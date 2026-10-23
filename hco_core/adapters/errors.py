@@ -13,6 +13,13 @@ class InvalidInventoryError(AdapterError):
     """The inventory file is not valid. The message names the device and the key."""
 
 
+class SourceOfTruthUnreachableError(AdapterError, OSError):
+    """The source of truth does not answer, or refuses the request.
+
+    The message names the setting to check, never a token or a request.
+    """
+
+
 class DeviceNotFoundError(AdapterError):
     """The source of truth has no device with this id."""
 

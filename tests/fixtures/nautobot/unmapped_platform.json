@@ -1,0 +1,66 @@
+{
+  "data": {
+    "devices": [
+      {
+        "id": "44444444-4444-4444-8444-444444444444",
+        "name": "fw-1",
+        "platform": {"name": "PAN-OS", "network_driver_mappings": {"hier_config": null}},
+        "role": {"name": "firewall"},
+        "location": {"name": "lab"},
+        "tags": [],
+        "primary_ip4": {"host": "10.0.0.4"},
+        "interfaces": []
+      },
+      {
+        "id": "55555555-5555-4555-8555-555555555555",
+        "name": "odd-1",
+        "platform": {"name": "Something", "network_driver_mappings": {"hier_config": "generic"}},
+        "role": null,
+        "location": null,
+        "tags": [],
+        "primary_ip4": {"host": "10.0.0.5"},
+        "interfaces": []
+      },
+      {
+        "id": "66666666-6666-4666-8666-666666666666",
+        "name": "no-address-1",
+        "platform": {"name": "Arista EOS", "network_driver_mappings": {"hier_config": "eos"}},
+        "role": null,
+        "location": null,
+        "tags": [],
+        "primary_ip4": null,
+        "interfaces": []
+      },
+      {
+        "id": "77777777-7777-4777-8777-777777777777",
+        "name": null,
+        "platform": null,
+        "role": null,
+        "location": null,
+        "tags": [],
+        "primary_ip4": {"host": "10.0.0.7"},
+        "interfaces": []
+      },
+      {
+        "id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+        "name": "bad-address-1",
+        "platform": {"name": "Arista EOS", "network_driver_mappings": {"hier_config": "eos"}},
+        "role": null,
+        "location": null,
+        "tags": [],
+        "primary_ip4": {"host": "not-an-address"},
+        "interfaces": []
+      },
+      {
+        "id": "88888888-8888-4888-8888-888888888888",
+        "name": "edge-8",
+        "platform": {"name": "Arista EOS", "network_driver_mappings": {"hier_config": "eos"}},
+        "role": null,
+        "location": null,
+        "tags": [],
+        "primary_ip4": {"host": "10.0.0.8"},
+        "interfaces": []
+      }
+    ]
+  }
+}
