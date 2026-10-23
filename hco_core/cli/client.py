@@ -113,8 +113,8 @@ class ApiClient:
             )
         return (
             f"cannot reach the API at {self.url} ({reason}); "
-            "check HCO_API_URL and that the API is running; the README section "
-            '"The REST API" shows how to start it'
+            "check HCO_API_URL and that the API is running; docs/admin/install.md "
+            "shows how to start it"
         )
 
     def _error(self, response: httpx.Response) -> ApiError:
