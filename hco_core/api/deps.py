@@ -11,6 +11,7 @@ from hco_core.db.session import create_database_engine, create_sessionmaker
 from hco_core.db.types import ULID_LENGTH
 from hco_core.engine.validation import MIN_KEY_BYTES
 from hco_core.graphs.review import ApprovalDeps, AssessmentHook
+from hco_core.ports import SourceOfTruth
 from hco_core.services.ledger import NotificationLedger
 from hco_core.services.resume import review_with_resume
 from hco_core.services.runs import RunRepository
@@ -94,6 +95,21 @@ def validation_key(settings: CoreSettings) -> bytes:
     return key
 
 
+def source_of_truth(settings: CoreSettings) -> SourceOfTruth:
+    """Return the source of truth that `HCO_SOT` names, with its settings."""
+    options = {
+        "path": str(settings.sot_path),
+        "verify_ssl": str(settings.nautobot_verify_ssl),
+        "timeout": str(settings.nautobot_timeout),
+        "redundancy_tag_prefix": settings.nautobot_redundancy_tag_prefix,
+    }
+    if settings.nautobot_url is not None:
+        options["url"] = settings.nautobot_url
+    return registry.source_of_truth(
+        settings.sot, options, token=settings.nautobot_token
+    )
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ApiDeps:
     """The database and the review graph dependencies that the routes use.
@@ -121,9 +137,7 @@ def build_deps(settings: CoreSettings) -> ApiDeps:
         settings,
         sessions,
         lambda approvals: ApprovalDeps(
-            sot=registry.source_of_truth(
-                settings.sot, {"path": str(settings.sot_path)}
-            ),
+            sot=source_of_truth(settings),
             secrets=registry.secrets("env", {}),
             connection=registry.connection(
                 settings.connection,

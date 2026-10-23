@@ -46,6 +46,11 @@ class CoreSettings(ClientSettings):
     connection: str = "mock"
     transcripts_dir: Path = Path("transcripts")
     validation_key: SecretStr | None = None
+    nautobot_url: str | None = None
+    nautobot_token: SecretStr | None = None
+    nautobot_verify_ssl: bool = True
+    nautobot_timeout: float = 30.0
+    nautobot_redundancy_tag_prefix: str = "hco-redundancy-"
 
     @field_validator("log_level", mode="before")
     @classmethod

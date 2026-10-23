@@ -117,8 +117,8 @@ PROBLEMS: Final[dict[type[Exception], Problem]] = {
         503,
         "sot-unavailable",
         "Source of truth unavailable",
-        "the source of truth is not readable; check HCO_SOT_PATH, "
-        "and read the server log for the cause",
+        "the source of truth is not readable; check HCO_SOT_PATH, or "
+        "HCO_NAUTOBOT_URL and HCO_NAUTOBOT_TOKEN, and read the server log",
     ),
     UnknownPlatformError: Problem(
         400, "unknown-platform", "Unknown platform", "no driver has the platform name"

@@ -165,8 +165,8 @@ def test_an_unknown_device_is_404_naming_the_id(api: Api) -> None:
 
 
 SOT_DETAIL = (
-    "the source of truth is not readable; check HCO_SOT_PATH, "
-    "and read the server log for the cause"
+    "the source of truth is not readable; check HCO_SOT_PATH, or "
+    "HCO_NAUTOBOT_URL and HCO_NAUTOBOT_TOKEN, and read the server log"
 )
 
 
