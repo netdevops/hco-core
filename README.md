@@ -446,7 +446,7 @@ The adapter never does these things:
   the reason.
 - It never stores a control character. A device whose name, role, location,
   or tag holds one, such as a NUL or an escape, is skipped. The skipped entry
-  then uses the device id.
+  uses the device id when the name holds the control character, else the name.
 - It never uses the intended config of another device. The Golden Config
   answer must hold one row of the device, or no row. Another answer is an
   error.

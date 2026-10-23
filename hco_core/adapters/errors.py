@@ -1,5 +1,7 @@
 """The errors that every built-in adapter raises."""
 
+from typing import Self
+
 
 class AdapterError(Exception):
     """Base class of every error an adapter raises."""
@@ -24,6 +26,10 @@ class SourceOfTruthUnreachableError(AdapterError, OSError):
         """Hold the message and the errno."""
         super().__init__(message)
         self.errno = code
+
+    def __reduce__(self) -> tuple[type[Self], tuple[str, int | None]]:
+        """Keep the message and the errno in a pickle or a copy."""
+        return type(self), (str(self), self.errno)
 
 
 class DeviceNotFoundError(AdapterError):
