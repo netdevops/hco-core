@@ -13,12 +13,15 @@ from sqlalchemy.exc import DBAPIError
 from structlog.testing import capture_logs
 
 from hco_core import __version__
+from hco_core.adapters.sot.nautobot import NautobotSourceOfTruth
+from hco_core.adapters.sot.yaml_file import YamlSourceOfTruth
 from hco_core.api.app import RequestIdMiddleware, app_from_env, create_app
 from hco_core.api.deps import (
     ApiDeps,
     DevelopmentKeyError,
     MissingValidationKeyError,
     build_deps,
+    source_of_truth,
     validation_key,
 )
 from hco_core.api.errors import PROBLEM_JSON, failure_reason
@@ -151,6 +154,19 @@ def test_the_dependencies_refuse_the_development_key_with_a_real_connection() ->
     assert validation_key(CoreSettings(validation_key=public, connection="mock")) == (
         DEVELOPMENT_VALIDATION_KEY.encode()
     )
+
+
+def test_the_source_of_truth_comes_from_the_settings() -> None:
+    """`HCO_SOT` selects the adapter, and the Nautobot token stays a secret."""
+    assert isinstance(source_of_truth(CoreSettings()), YamlSourceOfTruth)
+    settings = CoreSettings(
+        sot="nautobot",
+        nautobot_url="https://nautobot.example",
+        nautobot_token=SecretStr("deps-token"),
+        nautobot_verify_ssl=False,
+        nautobot_timeout=5,
+    )
+    assert isinstance(source_of_truth(settings), NautobotSourceOfTruth)
 
 
 def test_the_request_id_middleware_passes_a_lifespan_scope_through(

@@ -4,14 +4,21 @@ The registry holds built-in factories only. It never imports a module or an
 object from a name, so a configuration value cannot load code.
 """
 
+import math
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from types import MappingProxyType
+
+from pydantic import SecretStr
 
 from hco_core.adapters.conn.mock import MockConnectionDriver
 from hco_core.adapters.errors import AdapterConfigError
 from hco_core.adapters.notify.log import LogChannel
 from hco_core.adapters.secrets.env import EnvSecretsProvider
+from hco_core.adapters.sot.nautobot import (
+    DEFAULT_REDUNDANCY_TAG_PREFIX,
+    NautobotSourceOfTruth,
+)
 from hco_core.adapters.sot.yaml_file import YamlSourceOfTruth
 from hco_core.ports import (
     ConnectionDriver,
@@ -22,8 +29,54 @@ from hco_core.ports import (
 
 type Options = Mapping[str, str]
 
-_SOURCES_OF_TRUTH: Mapping[str, Callable[[Options], SourceOfTruth]] = MappingProxyType(
-    {"yaml": lambda options: YamlSourceOfTruth(Path(_option(options, "yaml", "path")))}
+_BOOLEANS = MappingProxyType({"true": True, "false": False})
+
+
+def _nautobot(options: Options, token: SecretStr | None) -> SourceOfTruth:
+    """Build the Nautobot adapter. Each error names the `HCO_NAUTOBOT_` variable.
+
+    Raises:
+        AdapterConfigError: If the URL or the token is missing, or an option
+            is not valid.
+
+    """
+    if token is None:
+        message = "the nautobot adapter needs a token; set HCO_NAUTOBOT_TOKEN"
+        raise AdapterConfigError(message)
+    if "url" not in options:
+        message = "the nautobot adapter needs the option 'url'; set HCO_NAUTOBOT_URL"
+        raise AdapterConfigError(message)
+    verify_ssl = _BOOLEANS.get(options.get("verify_ssl", "true").lower())
+    if verify_ssl is None:
+        message = "HCO_NAUTOBOT_VERIFY_SSL must be true or false"
+        raise AdapterConfigError(message)
+    try:
+        timeout = float(options.get("timeout", "30"))
+    except ValueError:
+        timeout = math.nan
+    if not (math.isfinite(timeout) and timeout > 0):
+        message = "HCO_NAUTOBOT_TIMEOUT must be a number of seconds above 0"
+        raise AdapterConfigError(message)
+    return NautobotSourceOfTruth(
+        options["url"],
+        token,
+        verify_ssl=verify_ssl,
+        timeout=timeout,
+        redundancy_tag_prefix=options.get(
+            "redundancy_tag_prefix", DEFAULT_REDUNDANCY_TAG_PREFIX
+        ),
+    )
+
+
+_SOURCES_OF_TRUTH: Mapping[
+    str, Callable[[Options, SecretStr | None], SourceOfTruth]
+] = MappingProxyType(
+    {
+        "nautobot": _nautobot,
+        "yaml": lambda options, _: YamlSourceOfTruth(
+            Path(_option(options, "yaml", "path"))
+        ),
+    }
 )
 _CONNECTIONS: Mapping[str, Callable[[Options, bytes], ConnectionDriver]] = (
     MappingProxyType(
@@ -42,9 +95,15 @@ _NOTIFY: Mapping[str, Callable[[Options], NotificationChannel]] = MappingProxyTy
 )
 
 
-def source_of_truth(name: str, options: Options) -> SourceOfTruth:
-    """Return the source of truth with the name. `yaml` needs the `path` option."""
-    return _factory("sot", _SOURCES_OF_TRUTH, name)(options)
+def source_of_truth(
+    name: str, options: Options, *, token: SecretStr | None = None
+) -> SourceOfTruth:
+    """Return the source of truth with the name.
+
+    `yaml` needs the `path` option. `nautobot` needs the `url` option and the
+    token, and takes `verify_ssl`, `timeout`, and `redundancy_tag_prefix`.
+    """
+    return _factory("sot", _SOURCES_OF_TRUTH, name)(options, token)
 
 
 def connection(name: str, options: Options, *, token_key: bytes) -> ConnectionDriver:
