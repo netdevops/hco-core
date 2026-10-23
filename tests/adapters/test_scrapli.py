@@ -31,11 +31,12 @@ from hco_core.adapters.errors import (
     DeviceWritesDisabledError,
     InvalidTokenError,
 )
+from hco_core.adapters.secrets.env import EnvSecretsProvider
 from hco_core.domain.apply import ApplyPlan, ApplyResult, ApplyStrategy
 from hco_core.domain.config import ConfigFormat
 from hco_core.domain.device import DeviceRecord
 from hco_core.domain.ids import DeviceID
-from hco_core.domain.secrets import DeviceCredentials
+from hco_core.domain.secrets import DeviceCredentials, SecretRef
 from hco_core.engine.platforms import PLATFORMS
 from hco_core.engine.remediation import build_bundle, parse, render_lines
 from hco_core.engine.validation import validate_plan
@@ -296,6 +297,24 @@ def test_a_credential_without_a_password_passes_empty_strings(
 
     kwargs = transport.connection.kwargs
     assert (kwargs["auth_password"], kwargs["auth_secondary"]) == ("", "")
+
+
+def test_the_env_enable_secret_goes_to_scrapli_as_auth_secondary(
+    transport: FakeTransport,
+) -> None:
+    """`HCO_SECRET_<KEY>_ENABLE` reaches scrapli, so the session can enter enable mode."""
+    provider = EnvSecretsProvider(
+        {
+            "HCO_SECRET_R1_USERNAME": USERNAME,
+            "HCO_SECRET_R1_PASSWORD": PASSWORD,
+            "HCO_SECRET_R1_ENABLE": ENABLE,
+        }
+    )
+    credentials = asyncio.run(provider.resolve(SecretRef(provider="env", key="r1")))
+
+    in_session(device(), lambda session: session.config_fingerprint(), credentials)
+
+    assert transport.connection.kwargs["auth_secondary"] == ENABLE
 
 
 def test_fetch_running_returns_the_running_config(transport: FakeTransport) -> None:

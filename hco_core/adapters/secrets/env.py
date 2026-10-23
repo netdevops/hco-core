@@ -17,7 +17,8 @@ class EnvSecretsProvider:
 
     `<KEY>` is the reference key in upper case, with each character other than
     a letter or a digit changed to `_`. The fields are `USERNAME`, `PASSWORD`,
-    and `API_KEY`.
+    `ENABLE`, and `API_KEY`. `ENABLE` is optional, and a blank value is the same
+    as no value.
     """
 
     def __init__(self, environ: Mapping[str, str] | None = None) -> None:
@@ -25,11 +26,13 @@ class EnvSecretsProvider:
         self._environ = os.environ if environ is None else environ
 
     async def resolve(self, ref: SecretRef) -> DeviceCredentials:
-        """Return the username and the password of the reference."""
+        """Return the username, the password, and the optional enable secret."""
         prefix = _prefix(ref)
+        enable = self._environ.get(f"{prefix}_ENABLE")
         return DeviceCredentials(
             username=self._value(f"{prefix}_USERNAME"),
             password=SecretStr(self._value(f"{prefix}_PASSWORD")),
+            enable=SecretStr(enable) if enable else None,
         )
 
     async def resolve_api_key(self, ref: SecretRef) -> SecretStr:

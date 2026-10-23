@@ -375,6 +375,8 @@ topology:
 
 The `env` provider reads `HCO_SECRET_<KEY>_USERNAME` and
 `HCO_SECRET_<KEY>_PASSWORD`, and `HCO_SECRET_<KEY>_API_KEY` for an API key.
+It also reads the optional enable secret from `HCO_SECRET_<KEY>_ENABLE`. A
+blank value is the same as no value.
 `<KEY>` is the key in upper case, with each character other than a letter or
 a digit changed to `_`. Two keys that differ only in these characters, such as
 `a-b` and `a_b`, read the same variables. An error names the variable, never
@@ -509,8 +511,11 @@ reads only. Phase 4 adds device writes.
   with `-`, or holds a space is refused before `ssh` runs.
 - One command runs at a time on a session. Two sessions to one device use two
   connections.
-- The credentials come from the `SecretsProvider`: the user name, the password,
-  and the enable secret. A private key is not used in this phase.
+- The credentials come from the `SecretsProvider`. The `env` provider reads
+  `HCO_SECRET_<KEY>_USERNAME`, `HCO_SECRET_<KEY>_PASSWORD`, and the optional
+  `HCO_SECRET_<KEY>_ENABLE`. scrapli sends the enable secret when the login
+  user is not in privileged exec. Without `_ENABLE`, the login user needs
+  privilege 15. A private key is not used in this phase.
 - `fetch_running()` sends `show running-config`. `config_fingerprint()` sends
   the fingerprint command of the platform table. `collect_state()` refuses a
   command that is not on the read-only allowlist of the platform, before it
@@ -518,8 +523,9 @@ reads only. Phase 4 adds device writes.
 - `dry_run()` reports no support. `apply()` verifies the validation token
   against the running config of the device, then always raises
   `DeviceWritesDisabledError`. `confirm()` and `rollback()` raise the same.
-- A connection or command error raises `DeviceUnreachableError` and logs
-  `device_unreachable`. The message names the device and the scrapli error
+- A connection or command error raises `DeviceUnreachableError`. A scrapli
+  error or an OS error also logs `device_unreachable`. A refused command or a
+  large answer gives the reason in the run only. The message names the device and the scrapli error
   type and text, made printable and cut at 200 characters. The user name, the
   password, and the enable secret are redacted from it. The scrapli text can
   hold the device prompt. The message never quotes a command answer.
@@ -529,8 +535,9 @@ reads only. Phase 4 adds device writes.
 - Device output is untrusted. scrapli reads the whole answer first, and the
   session timeout bounds that read. hco-core then refuses an answer above
   16 MiB and never keeps it.
-- The driver needs scrapli 2025.1.30. The releases from 2025.8.16b1 on are a
-  rewrite with a different API, so the extra pins `>=2025.1.30,<2025.8`.
+- The driver needs scrapli 2025.1.30. The releases 2.0.0a1 to 2.0.0a5 and the
+  releases from 2025.8.16b1 on are a rewrite with a different API, so the
+  extra pins `>=2025.1.30,<2025.8`.
 
 ## Database and settings
 
