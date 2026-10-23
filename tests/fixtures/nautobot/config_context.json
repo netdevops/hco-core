@@ -1,0 +1,10 @@
+{
+  "data": {
+    "devices": [
+      {
+        "id": "11111111-1111-4111-8111-111111111111",
+        "config_context": {"ntp_servers": ["192.0.2.10"], "snmp": {"location": "rack 4"}}
+      }
+    ]
+  }
+}

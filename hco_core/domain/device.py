@@ -55,6 +55,21 @@ class DeviceSelector(BaseModel):
     tags_any: frozenset[str] = frozenset()
     tags_all: frozenset[str] = frozenset()
 
+    def matches(self, record: DeviceRecord) -> bool:
+        """Return True if the record matches every field of the selector."""
+        fields = (
+            (self.ids, record.id),
+            (self.names, record.name),
+            (self.platforms, record.platform_name),
+            (self.roles, record.role),
+            (self.sites, record.site),
+        )
+        return (
+            all(not wanted or value in wanted for wanted, value in fields)
+            and (not self.tags_any or bool(self.tags_any & record.tags))
+            and self.tags_all <= record.tags
+        )
+
 
 class DevicePage(BaseModel):
     """One page of devices, with a cursor for the next."""
@@ -62,6 +77,8 @@ class DevicePage(BaseModel):
     devices: tuple[DeviceRecord, ...]
     cursor: str | None = None
     total: int | None = None
+    skipped: Mapping[str, str] = Field(default_factory=dict)
+    """Devices that the adapter left out of this page, by name, with the reason."""
 
 
 class TopologyEdge(BaseModel):
