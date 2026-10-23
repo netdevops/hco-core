@@ -3445,4 +3445,4 @@ scrapli = ["scrapli"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12,<3.15"
-content-hash = "1a15e9d41e44dd072c60136d72efdb31bb9c0a3c281236fe321e7d037b7969c3"
+content-hash = "22317f53125aa1dc75bb754d39a8314e84443f2e22966ac6e276541f866b2491"

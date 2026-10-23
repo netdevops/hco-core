@@ -2,6 +2,7 @@
 
 import asyncio
 import threading
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -9,6 +10,9 @@ from pathlib import Path
 
 import pytest
 from pydantic import SecretStr
+
+pytest.importorskip("scrapli")
+
 from scrapli.exceptions import (
     ScrapliAuthenticationFailed,
     ScrapliConnectionNotOpened,
@@ -41,11 +45,13 @@ FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 TRANSCRIPTS = FIXTURES / "transcripts" / "r1"
 KEY = b"k" * 32
 IOS = "CISCO_IOS"
+USERNAME = "adm1n-USER-marker"
 PASSWORD = "p4ss-SECRET-marker"  # ruff: ignore[hardcoded-password-string]
 ENABLE = "en4ble-SECRET-marker"
 CREDENTIALS = DeviceCredentials(
-    username="admin", password=SecretStr(PASSWORD), enable=SecretStr(ENABLE)
+    username=USERNAME, password=SecretStr(PASSWORD), enable=SecretStr(ENABLE)
 )
+INVALID_INPUT = "% Invalid input detected at '^' marker."
 RUNNING = (TRANSCRIPTS / "running.txt").read_text(encoding="utf8")
 LAST_CHANGE = "! Last configuration change at 10:00:00 UTC Fri Oct 16 2026 by admin"
 VERSION = "Cisco IOS Software, Catalyst L3 Switch Software\n"
@@ -53,6 +59,7 @@ TIMEOUT = 12.5
 """A session timeout that differs from every scrapli default."""
 DEFAULT_TIMEOUT = 60.0
 CALLS_IN_ONE_COLLECT = 3
+COMMANDS_AT_ONCE = 3
 """Open, one command, and close."""
 
 
@@ -82,8 +89,16 @@ class FakeConnection:
 
     transport: "FakeTransport"
     kwargs: dict[str, object]
+    failed_when_contains: list[str] = field(
+        default_factory=lambda: ["% Ambiguous command", "% Invalid input detected"]
+    )
     sent: list[str] = field(default_factory=list[str])
+    send_kwargs: list[dict[str, object]] = field(
+        default_factory=list[dict[str, object]]
+    )
     threads: list[threading.Thread] = field(default_factory=list[threading.Thread])
+    in_flight: int = 0
+    most_in_flight: int = 0
     opened: bool = False
     closed: bool = False
 
@@ -101,14 +116,31 @@ class FakeConnection:
         if self.transport.close_error is not None:
             raise self.transport.close_error
 
-    def send_command(self, command: str) -> Response:
-        """Answer from the table, or raise the failure of the command."""
+    def send_command(
+        self, command: str, *, failed_when_contains: list[str] | None = None
+    ) -> Response:
+        """Answer from the table, or raise the failure of the command.
+
+        The call takes a moment, so two calls at one time overlap and
+        `most_in_flight` records it.
+        """
         self.threads.append(threading.current_thread())
         self.sent.append(command)
+        self.send_kwargs.append({"failed_when_contains": failed_when_contains})
+        self.in_flight += 1
+        self.most_in_flight = max(self.most_in_flight, self.in_flight)
+        time.sleep(0.01)
+        self.in_flight -= 1
         if command in self.transport.failures:
             raise self.transport.failures[command]
         response = Response(
-            host="10.0.0.1", channel_input=command, failed_when_contains=["% Invalid"]
+            host="10.0.0.1",
+            channel_input=command,
+            failed_when_contains=(
+                self.failed_when_contains
+                if failed_when_contains is None
+                else failed_when_contains
+            ),
         )
         response.record_response(self.transport.outputs[command].encode())
         return response
@@ -227,7 +259,7 @@ def test_the_session_opens_scrapli_with_the_system_transport(
         "host": "10.0.0.1",
         "port": 22,
         "transport": "system",
-        "auth_username": "admin",
+        "auth_username": USERNAME,
         "auth_password": PASSWORD,
         "auth_secondary": ENABLE,
         "auth_strict_key": True,
@@ -405,12 +437,99 @@ def test_an_unsupported_device_is_refused_before_scrapli_opens(
     assert transport.connections == []
 
 
+@pytest.mark.parametrize("address", ["", "-oProxyCommand=touch /tmp/x", "10.0.0.1 x"])
+def test_an_address_that_is_not_a_host_is_refused_before_scrapli_opens(
+    transport: FakeTransport, address: str
+) -> None:
+    """The address is the first argument of `ssh`, so an option or a space is refused."""
+    record = device().model_copy(update={"mgmt_address": address})
+
+    with pytest.raises(AdapterConfigError, match="management address"):
+        in_session(record, lambda session: session.config_fingerprint())
+
+    assert transport.connections == []
+
+
+def test_concurrent_calls_on_one_session_run_one_at_a_time(
+    transport: FakeTransport,
+) -> None:
+    """One scrapli connection takes one command at a time."""
+
+    async def three_at_once(session: DeviceSession) -> None:
+        await asyncio.gather(
+            session.collect_state(["show version"]),
+            session.config_fingerprint(),
+            session.collect_state(["show clock"]),
+        )
+
+    in_session(device(), three_at_once)
+
+    connection = transport.connection
+    assert connection.most_in_flight == 1
+    assert len(connection.sent) == COMMANDS_AT_ONCE
+
+
+def test_a_failure_string_inside_the_answer_does_not_fail_the_read(
+    transport: FakeTransport,
+) -> None:
+    """Device text in a description or a banner never decides if a read works."""
+    body = f"interface Gi1\n description {INVALID_INPUT}\n"
+    transport.outputs["show running-config"] = body
+    transport.outputs["show version"] = f"Version 1\n{INVALID_INPUT}\n"
+
+    running = in_session(device(), lambda session: session.fetch_running())
+    state = in_session(
+        device(), lambda session: session.collect_state(["show version"])
+    )
+
+    assert running.body == body
+    assert state["show version"] == f"Version 1\n{INVALID_INPUT}\n"
+    assert all(
+        call_kwargs == {"failed_when_contains": []}
+        for connection in transport.connections
+        for call_kwargs in connection.send_kwargs
+    )
+
+
+@pytest.mark.parametrize("answer", [INVALID_INPUT, f"\n  {INVALID_INPUT}\nmore\n"])
+def test_an_error_as_the_first_line_of_the_answer_is_a_refused_command(
+    transport: FakeTransport, answer: str
+) -> None:
+    """The failure strings of the scrapli platform match the first line only."""
+    transport.outputs["show version"] = answer
+
+    with pytest.raises(DeviceUnreachableError, match="refused 'show version'") as error:
+        in_session(device(), lambda session: session.collect_state(["show version"]))
+
+    assert "marker" not in str(error.value)
+
+
+def test_the_traceback_locals_hold_no_scrapli_error(transport: FakeTransport) -> None:
+    """The scrapli error is not chained and is not in a frame of the traceback."""
+    transport.failures["show version"] = ScrapliTimeout(PASSWORD)
+    transport.open_error = None
+
+    with pytest.raises(DeviceUnreachableError) as error:
+        in_session(device(), lambda session: session.collect_state(["show version"]))
+
+    transport.open_error = ScrapliAuthenticationFailed(PASSWORD)
+    with pytest.raises(DeviceUnreachableError) as open_error:
+        in_session(device(), lambda session: session.config_fingerprint())
+
+    for raised in (error.value, open_error.value):
+        traceback = raised.__traceback__
+        while traceback is not None:
+            for value in traceback.tb_frame.f_locals.values():
+                assert not isinstance(value, ScrapliException)
+            traceback = traceback.tb_next
+
+
 def test_an_open_failure_is_unreachable_without_the_credentials(
     transport: FakeTransport,
 ) -> None:
     """The error names the device and the scrapli error, never a secret."""
     transport.open_error = ScrapliAuthenticationFailed(
-        f"auth failed for admin with {PASSWORD} and {ENABLE}"
+        f"auth failed for {USERNAME} with {PASSWORD} and {ENABLE}"
     )
 
     with capture_logs() as lines, pytest.raises(DeviceUnreachableError) as error:
@@ -421,6 +540,7 @@ def test_an_open_failure_is_unreachable_without_the_credentials(
     assert "'r1'" in str(error.value)
     assert PASSWORD not in text
     assert ENABLE not in text
+    assert USERNAME not in text
     assert error.value.__cause__ is None
     assert error.value.__context__ is None
     assert [line["event"] for line in lines] == ["device_unreachable"]

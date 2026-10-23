@@ -6,9 +6,12 @@ the host makes the connection, and every scrapli call runs in a worker thread.
 The transport checks the host key, so the key of the device must be in the
 known hosts of the user that runs hco-core.
 
-Every answer of the device is untrusted input. The session bounds its size and
-never quotes it in an error. The device writes of Phase 4 are disabled:
-`apply` verifies the validation token, then refuses.
+Every answer of the device is untrusted input. scrapli reads the whole answer
+first, and `timeout_ops` bounds that read. The session then refuses an answer
+above `MAX_OUTPUT_CHARS` and never keeps it, and it never quotes a command
+answer in an error. The text of a scrapli error can hold the device prompt.
+The device writes of Phase 4 are disabled: `apply` verifies the validation
+token, then refuses.
 """
 
 import asyncio
@@ -100,11 +103,15 @@ class ScrapliConnectionDriver:
             A session that reads from the device.
 
         Raises:
-            AdapterConfigError: For an unsupported platform or format.
+            AdapterConfigError: For an unsupported platform or format, or a
+                management address that is not a host name or an IP address.
 
         """
         if not self.supports(device.platform_name, device.config_format):
             message = f"the scrapli driver does not support {device.platform_name} in {device.config_format}"
+            raise AdapterConfigError(message)
+        if not _is_host(device.mgmt_address):
+            message = f"the management address of device {device.id!r} is not a host name or an IP address"
             raise AdapterConfigError(message)
         connection = await asyncio.to_thread(_connect, device, credentials, timeout)
         try:
@@ -130,6 +137,7 @@ class ScrapliSession:
         self._connection = connection
         self._key = key
         self._profile: PlatformProfile = PLATFORMS[device.platform_name]
+        self._lock = asyncio.Lock()
 
     async def fetch_running(self) -> ConfigDocument:
         """Return the running config, with the fingerprint of the platform command."""
@@ -211,28 +219,39 @@ class ScrapliSession:
     async def _send(self, command: str) -> str:
         """Send one command in a worker thread and return its output.
 
+        One command runs at a time on the connection. A failure string of the
+        scrapli platform counts only on the first line of the answer, so device
+        text further down never decides if a read works.
+
         Raises:
-            DeviceUnreachableError: On a transport error, a failed command, or
+            DeviceUnreachableError: On a transport error, a refused command, or
                 an output above `MAX_OUTPUT_CHARS`. The message never quotes
                 the output.
 
         """
         try:
-            response = await asyncio.to_thread(self._connection.send_command, command)
+            async with self._lock:
+                response = await asyncio.to_thread(
+                    self._connection.send_command, command, failed_when_contains=[]
+                )
         except (ScrapliException, OSError) as error:
-            failure = error
+            message = _unreachable_message(
+                self._device, self._credentials, f"did not answer {command!r}", error
+            )
         else:
-            if response.failed:
+            if self._refused(response.result):
                 message = f"device {self._device.id!r} refused {command!r}"
                 raise DeviceUnreachableError(message)
             if len(response.result) > MAX_OUTPUT_CHARS:
                 message = f"device {self._device.id!r} answered {command!r} with more than {MAX_OUTPUT_CHARS} characters"
                 raise DeviceUnreachableError(message)
             return response.result
-        message = _unreachable_message(
-            self._device, self._credentials, f"did not answer {command!r}", failure
-        )
         raise DeviceUnreachableError(message)
+
+    def _refused(self, answer: str) -> bool:
+        """Return True if the first line with text is a CLI error of the platform."""
+        first_line = next((line for line in answer.splitlines() if line.strip()), "")
+        return any(text in first_line for text in self._connection.failed_when_contains)
 
 
 def _connect(
@@ -261,12 +280,11 @@ def _connect(
     try:
         connection.open()
     except (ScrapliException, OSError) as error:
-        failure = error
+        message = _unreachable_message(device, credentials, "cannot be opened", error)
     else:
         return connection
     with contextlib.suppress(ScrapliException, OSError):
         connection.close()
-    message = _unreachable_message(device, credentials, "cannot be opened", failure)
     raise DeviceUnreachableError(message)
 
 
@@ -276,7 +294,7 @@ def _unreachable_message(
     """Log the error and return its message with every credential value redacted.
 
     The caller raises outside the `except` block, so the scrapli error is not
-    the context of the new error and does not travel with it.
+    chained to the new error and is not in a frame of its traceback.
     """
     reason = _redacted_reason(error, credentials)
     _log.warning("device_unreachable", device=device.id, reason=reason)
@@ -288,12 +306,29 @@ def _value(secret: SecretStr | None) -> str:
     return "" if secret is None else secret.get_secret_value()
 
 
+def _is_host(address: str) -> bool:
+    """Return True if the address can be the destination argument of `ssh`."""
+    return (
+        bool(address)
+        and not address.startswith("-")
+        and address.isprintable()
+        and " " not in address
+    )
+
+
 def _redacted_reason(error: Exception, credentials: DeviceCredentials) -> str:
-    """Return the error type and text on one line, with each secret value redacted."""
+    """Return the error type and text on one line, with each credential redacted."""
     name = type(error).__name__
     text = f"{name}: {error}" if str(error) else name
-    for secret in (credentials.password, credentials.enable, credentials.private_key):
-        if value := _value(secret):
+    values = (
+        credentials.username,
+        *(
+            _value(s)
+            for s in (credentials.password, credentials.enable, credentials.private_key)
+        ),
+    )
+    for value in values:
+        if value:
             text = text.replace(value, _REDACTED)
     one_line = "".join(c if c.isprintable() else " " for c in text)
     return one_line[:_MAX_REASON_CHARS]

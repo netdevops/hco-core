@@ -7,7 +7,6 @@ import pytest
 from pydantic import SecretStr
 
 from hco_core.adapters import registry
-from hco_core.adapters.conn.scrapli import ScrapliConnectionDriver
 from hco_core.adapters.errors import AdapterConfigError
 from hco_core.adapters.sot.nautobot import NautobotSourceOfTruth
 from hco_core.ports import (
@@ -31,9 +30,8 @@ def test_each_built_in_name_builds_its_adapter() -> None:
     assert isinstance(
         registry.connection("mock", options, token_key=KEY), ConnectionDriver
     )
-    assert isinstance(
-        registry.connection("scrapli", {}, token_key=KEY), ScrapliConnectionDriver
-    )
+    pytest.importorskip("scrapli")
+    assert registry.connection("scrapli", {}, token_key=KEY).name == "scrapli"
     assert isinstance(registry.secrets("env", {}), SecretsProvider)
     assert isinstance(registry.notification_channel("log", {}), NotificationChannel)
 

@@ -505,7 +505,10 @@ reads only. Phase 4 adds device writes.
 - The session connects to `mgmt_address` on port 22 with the system transport,
   so the `ssh` command of the host makes the connection. The transport checks
   the host key. Add the key of the device to the known hosts of the user that
-  runs hco-core before the first session.
+  runs hco-core before the first session. An address that is empty, starts
+  with `-`, or holds a space is refused before `ssh` runs.
+- One command runs at a time on a session. Two sessions to one device use two
+  connections.
 - The credentials come from the `SecretsProvider`: the user name, the password,
   and the enable secret. A private key is not used in this phase.
 - `fetch_running()` sends `show running-config`. `config_fingerprint()` sends
@@ -516,11 +519,18 @@ reads only. Phase 4 adds device writes.
   against the running config of the device, then always raises
   `DeviceWritesDisabledError`. `confirm()` and `rollback()` raise the same.
 - A connection or command error raises `DeviceUnreachableError` and logs
-  `device_unreachable`. The message names the device and the scrapli error.
-  It never holds a credential, and it never quotes device output.
-- Device output is untrusted. An answer above 16 MiB is an error.
-- The driver needs scrapli 2025.1.30 or later, below 2026. The 2026 releases
-  of scrapli have a different API.
+  `device_unreachable`. The message names the device and the scrapli error
+  type and text, made printable and cut at 200 characters. The user name, the
+  password, and the enable secret are redacted from it. The scrapli text can
+  hold the device prompt. The message never quotes a command answer.
+- A CLI error of the platform, such as `% Invalid input detected`, counts only
+  on the first line of an answer. The same text in a description or a banner
+  does not stop a read.
+- Device output is untrusted. scrapli reads the whole answer first, and the
+  session timeout bounds that read. hco-core then refuses an answer above
+  16 MiB and never keeps it.
+- The driver needs scrapli 2025.1.30. The releases from 2025.8.16b1 on are a
+  rewrite with a different API, so the extra pins `>=2025.1.30,<2025.8`.
 
 ## Database and settings
 
