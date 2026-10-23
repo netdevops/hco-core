@@ -431,6 +431,17 @@ against a real Nautobot:
   `interfaces.cable_peer_interface.device.id`
 - `role.name`, `location.name`, `tags.name`, and `config_context`
 
+A device sync names each skipped device. The answer of
+`POST /api/v1/devices/sync` holds `skipped`, a map of the device name to the
+reason, with 1000 devices or fewer. The log names every one. The command line
+shows one line for each:
+
+```text
+Synced 3 devices.
+Skipped 1 device:
+  - fw-1: the platform has no hier_config driver mapping
+```
+
 The adapter never does these things:
 
 - It never sends a PUT, a PATCH, or a DELETE. Each POST is a GraphQL query.
@@ -443,7 +454,7 @@ The adapter never does these things:
 - It never treats a device as GENERIC. A device with no platform, with no
   `hier_config` mapping, with a mapping to GENERIC, or with no valid primary
   IPv4 address is not in the page. `DevicePage.skipped` gives its name and
-  the reason.
+  the reason, and the log line `device_skipped` names each one.
 - It never stores a control character. A device whose name, role, location,
   or tag holds one, such as a NUL or an escape, is skipped. The skipped entry
   uses the device id when the name holds the control character, else the name.
@@ -468,7 +479,8 @@ Know these limits:
   `SourceOfTruthUnreachableError`, an `OSError`. A device sync then answers
   503. The log line `request_failed` gives the reason: `EACCES` for a refused
   token, `ENOENT` for a 404, `ETIMEDOUT`, `ECONNREFUSED`, `EIO`, or `EPROTO`
-  for another status.
+  for another status. Its `detail` gives the sentence of the adapter, such as
+  `refused the token with HTTP 401; check HCO_NAUTOBOT_TOKEN`.
 - A 404 from the Golden Config route says that the Golden Config app does not
   answer.
 - The token must be printable ASCII. It is never in a log line, in `repr()`,

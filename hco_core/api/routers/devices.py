@@ -5,6 +5,7 @@ from typing import Annotated
 
 import structlog
 from fastapi import APIRouter, Depends
+from pydantic import Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.postgresql import Insert, insert
 from sqlalchemy.exc import SQLAlchemyError
@@ -31,6 +32,9 @@ SYNC_CHUNK = 1000
 
 SOT_PAGE = 5000
 """The devices that the sync asks the source of truth for in one page."""
+
+MAX_SKIPPED = 1000
+"""The most skipped devices in a sync answer. The log names each one."""
 
 _log = structlog.get_logger(__name__)
 
@@ -61,9 +65,11 @@ class DevicePage(BaseModel):
 
 
 class SyncResult(BaseModel):
-    """How many devices the sync wrote."""
+    """How many devices the sync wrote, and the devices the source of truth skipped."""
 
     synced: int
+    skipped: dict[str, str] = Field(default_factory=dict, max_length=MAX_SKIPPED)
+    """The reason for each skipped device, by name or id, for `MAX_SKIPPED` at most."""
 
 
 def devices_router(deps: ApiDeps) -> APIRouter:
@@ -97,11 +103,11 @@ def devices_router(deps: ApiDeps) -> APIRouter:
         actor: Annotated[Actor, Depends(current_actor)],
     ) -> SyncResult:
         """Write every device of the source of truth. A known device is updated."""
-        records = await _all_devices(sot)
+        records, skipped = await _all_devices(sot)
         with database_errors():
             async with deps.sessions.begin() as session:
                 await _store(session, sot.name, records, actor)
-        return SyncResult(synced=len(records))
+        return SyncResult(synced=len(records), skipped=skipped)
 
     return router
 
@@ -139,8 +145,11 @@ async def find_device(deps: ApiDeps, device_id: str) -> models.Device:
     return device
 
 
-async def _all_devices(sot: SourceOfTruth) -> list[DeviceRecord]:
+async def _all_devices(
+    sot: SourceOfTruth,
+) -> tuple[list[DeviceRecord], dict[str, str]]:
     records: list[DeviceRecord] = []
+    skipped: dict[str, str] = {}
     cursor: str | None = None
     while True:
         try:
@@ -148,9 +157,12 @@ async def _all_devices(sot: SourceOfTruth) -> list[DeviceRecord]:
         except OSError as error:
             raise SourceOfTruthUnavailableError from error
         records.extend(page.devices)
+        for key, reason in page.skipped.items():
+            if len(skipped) < MAX_SKIPPED:
+                skipped[key] = reason
         cursor = page.cursor
         if cursor is None:
-            return records
+            return records, skipped
 
 
 async def _store(

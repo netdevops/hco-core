@@ -597,3 +597,28 @@ def test_the_golden_config_device_id_is_compared_as_a_uuid() -> None:
     intended = asyncio.run(adapter(answer(200, body)).intended_config(GROUP_ONLY))
     assert intended is not None
     assert intended.body == "hostname edge-1"
+
+
+def test_each_skipped_device_is_logged_with_its_key_and_reason() -> None:
+    """One warning names each skipped device, with no token and no control text."""
+    with capture_logs() as lines:
+        asyncio.run(adapter(FakeNautobot("unmapped_platform.json")).list_devices())
+    skipped = [line for line in lines if line["event"] == "device_skipped"]
+    assert {(line["device"], line["reason"]) for line in skipped} == {
+        ("fw-1", nautobot.UNMAPPED_PLATFORM),
+        ("odd-1", nautobot.UNMAPPED_PLATFORM),
+        ("no-address-1", nautobot.NO_ADDRESS),
+        ("77777777-7777-4777-8777-777777777777", nautobot.NO_PLATFORM),
+        ("bad-address-1", nautobot.BAD_ADDRESS),
+    }
+    assert {line["log_level"] for line in skipped} == {"warning"}
+    assert_no_leak(repr(lines))
+
+
+def test_a_long_device_name_is_cut_in_the_skipped_key() -> None:
+    """The key of a skipped device holds at most `MAX_KEY_LENGTH` characters."""
+    devices = page_of("unmapped_platform.json")[:1]
+    devices[0]["name"] = "n" * 1000
+    body = json.dumps({"data": {"devices": devices}}).encode()
+    page = asyncio.run(adapter(answer(200, body)).list_devices())
+    assert list(page.skipped) == ["n" * nautobot.MAX_KEY_LENGTH]

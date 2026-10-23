@@ -794,6 +794,28 @@ def test_device_sync_sends_the_actor_and_shows_the_count(
     assert api.requests[0].headers["X-HCO-Actor"] == "alice"
 
 
+def test_device_sync_names_each_skipped_device_on_one_safe_line(
+    api: FakeApi, invoke: Callable[..., Result]
+) -> None:
+    """Each skipped device gets one line, with no control character."""
+    skipped = {"fw-1": "the platform has no hier_config driver mapping", "x": "a\x1bb"}
+    api.on(
+        "POST",
+        "/devices/sync",
+        httpx.Response(200, json={"synced": 1, "skipped": skipped}),
+    )
+
+    result = invoke("device", "sync", "--as", "alice")
+
+    assert result.exit_code == 0, result.output
+    assert result.output == (
+        "Synced 1 device.\n"
+        "Skipped 2 devices:\n"
+        "  - fw-1: the platform has no hier_config driver mapping\n"
+        "  - x: ab\n"
+    )
+
+
 def test_an_invalid_setting_is_one_sentence(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
