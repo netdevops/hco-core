@@ -6,6 +6,7 @@ The adapter only reads: each request is a GET, or a POST of a GraphQL query.
 
 import ipaddress
 import json
+import re
 import uuid
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
@@ -66,11 +67,15 @@ DEVICES_QUERY: Final = """query HcoDevices($limit: Int, $offset: Int, $id: [Stri
   }
 }"""
 CONTEXT_QUERY: Final = """query HcoContext($id: [String]) {
-  devices(id: $id) { id config_context }
+  devices(id: $id) { id name config_context }
 }"""
 GROUP_QUERY: Final = """query HcoGroup($tags: [String]) {
   devices(tags: $tags) { id }
 }"""
+CREDENTIAL_KEY_FIELD: Final = "hco_secret_key"
+"""The config context key that names the `env` secret key of a device."""
+MAX_SECRET_KEY_LENGTH: Final = 128
+_NOT_KEY_CHARACTERS = re.compile(r"[^A-Z0-9_]")
 NO_PLATFORM: Final = "the device has no platform"
 UNMAPPED_PLATFORM: Final = "the platform has no hier_config driver mapping"
 NO_ADDRESS: Final = "the device has no primary IPv4 address"
@@ -340,13 +345,38 @@ class NautobotSourceOfTruth:
             redundancy_groups=redundancy_groups,
         )
 
-    async def secret_ref(  # ruff: ignore[no-self-use]
+    async def secret_ref(
         self, device_id: DeviceID, purpose: SecretPurpose
     ) -> SecretRef:
-        """Return a `nautobot` reference to the credential, with no request."""
-        return SecretRef(
-            provider="nautobot", key=f"{device_id}:{purpose}", purpose=purpose
-        )
+        """Return an `env` reference to the credential of the device, never a value.
+
+        The key is `hco_secret_key` of the config context. Without it, the key
+        is the device name in upper case, with each character other than a
+        letter, a digit, or `_` changed to `_`.
+
+        Raises:
+            InvalidInventoryError: If `hco_secret_key` is not a non-empty
+                string of `MAX_SECRET_KEY_LENGTH` characters or fewer.
+
+        """
+        device = await self._one(CONTEXT_QUERY, device_id)
+        context = device.config_context or {}
+        if CREDENTIAL_KEY_FIELD not in context:
+            name = (device.name or device.id).upper()
+            key = _NOT_KEY_CHARACTERS.sub("_", name)
+            return SecretRef(provider="env", key=key, purpose=purpose)
+        value = context[CREDENTIAL_KEY_FIELD]
+        if not (
+            isinstance(value, str)
+            and value.strip()
+            and len(value) <= MAX_SECRET_KEY_LENGTH
+        ):
+            message = (
+                f"device {device_id!r}, config_context key {CREDENTIAL_KEY_FIELD!r}: "
+                f"the value must be text of 1 to {MAX_SECRET_KEY_LENGTH} characters"
+            )
+            raise InvalidInventoryError(message)
+        return SecretRef(provider="env", key=value, purpose=purpose)
 
     async def _one(self, query: str, device_id: DeviceID) -> _Device:
         _check_id(device_id)

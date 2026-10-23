@@ -421,11 +421,25 @@ The adapter reads these Nautobot objects:
   device with that tag in the group `core`.
 - `GET /api/status/` for `health()`.
 
+The adapter relies on these GraphQL names. The lab run must confirm them
+against a real Nautobot:
+
+- `devices(limit:, offset:, id:, tags:)`
+- `platform.network_driver_mappings`
+- `primary_ip4.host`
+- `interfaces.cable_peer_interface.name` and
+  `interfaces.cable_peer_interface.device.id`
+- `role.name`, `location.name`, `tags.name`, and `config_context`
+
 The adapter never does these things:
 
 - It never sends a PUT, a PATCH, or a DELETE. Each POST is a GraphQL query.
-- It never reads a secret from Nautobot. `secret_ref()` returns the reference
-  `nautobot`, `<device id>:<purpose>`. The `env` provider cannot resolve it.
+- It never reads a secret from Nautobot. `secret_ref()` returns an `env`
+  reference. The key is `hco_secret_key` of the device config context. If
+  that key is not there, the key is the device name in upper case, with each
+  character other than a letter, a digit, or `_` changed to `_`. Set
+  `HCO_SECRET_<KEY>_USERNAME` and `HCO_SECRET_<KEY>_PASSWORD`, the same as
+  for the YAML adapter.
 - It never treats a device as GENERIC. A device with no platform, with no
   `hier_config` mapping, with a mapping to GENERIC, or with no valid primary
   IPv4 address is not in the page. `DevicePage.skipped` gives its name and
@@ -434,6 +448,10 @@ The adapter never does these things:
 Know these limits:
 
 - The device id is the Nautobot UUID.
+- `hco_secret_key` must be text of 1 to 128 characters. An error names the
+  device and the key, never the value.
+- hco-core does not read Nautobot Secrets Groups. A `NautobotSecretsProvider`
+  that reads them is Phase 2.
 - The selector applies after the query, so a page can hold fewer devices than
   the limit.
 - Only a cable between two interfaces becomes a topology edge. The adapter

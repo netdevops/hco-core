@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
 from pathlib import Path
 
 import httpx
@@ -276,16 +276,55 @@ def test_topology_gives_cable_edges_and_redundancy_groups() -> None:
     assert graph.shares_group(EDGE_2, GROUP_ONLY)
 
 
-def test_secret_ref_is_a_reference_and_asks_nothing() -> None:
-    """The reference names the device and the purpose, never a value."""
-    fake = FakeNautobot()
-    ref = asyncio.run(adapter(fake).secret_ref(EDGE_1, SecretPurpose.DEVICE_ENABLE))
+def context_answer(name: str | None, context: Mapping[str, object]) -> Handler:
+    """Return a handler that gives one device with the name and the context."""
+    device = {"id": EDGE_1, "name": name, "config_context": context}
+    body = json.dumps({"data": {"devices": [device]}}).encode()
+    return answer(200, body)
+
+
+@pytest.mark.parametrize(
+    ("name", "context", "key"),
+    [
+        ("edge-1", {"hco_secret_key": "lab"}, "lab"),
+        ("edge-1.dc1 a", {"ntp": ["192.0.2.10"]}, "EDGE_1_DC1_A"),
+        (None, {}, "11111111_1111_4111_8111_111111111111"),
+    ],
+)
+def test_secret_ref_is_an_env_reference(
+    name: str | None, context: Mapping[str, object], key: str
+) -> None:
+    """The key is `hco_secret_key` of the config context, else the device name."""
+    sot = adapter(context_answer(name, context))
+    ref = asyncio.run(sot.secret_ref(EDGE_1, SecretPurpose.DEVICE_ENABLE))
     assert ref == SecretRef(
-        provider="nautobot",
-        key=f"{EDGE_1}:device_enable",
-        purpose=SecretPurpose.DEVICE_ENABLE,
+        provider="env", key=key, purpose=SecretPurpose.DEVICE_ENABLE
     )
-    assert fake.requests == []
+
+
+def test_secret_ref_never_carries_a_value() -> None:
+    """The reference has only the provider, the key, and the purpose."""
+    context = {"hco_secret_key": "lab", "password": "SECRET-FROM-NAUTOBOT"}
+    sot = adapter(context_answer("edge-1", context))
+    ref = asyncio.run(sot.secret_ref(EDGE_1, SecretPurpose.DEVICE_LOGIN))
+    dumped = ref.model_dump_json()
+    assert set(ref.model_dump()) == {"provider", "key", "purpose"}
+    assert_no_leak(dumped)
+    assert_no_leak(repr(ref))
+
+
+@pytest.mark.parametrize(
+    "value",
+    [7, "", "   ", ["lab"], "x" * 129],
+    ids=["int", "empty", "blank", "list", "long"],
+)
+def test_a_bad_hco_secret_key_is_refused_without_its_value(value: object) -> None:
+    """The error names the device and the key, never the value."""
+    sot = adapter(context_answer("edge-1", {"hco_secret_key": value}))
+    with pytest.raises(InvalidInventoryError, match="'hco_secret_key'") as error:
+        asyncio.run(sot.secret_ref(EDGE_1, SecretPurpose.DEVICE_LOGIN))
+    assert EDGE_1 in str(error.value)
+    assert "x" * 129 not in str(error.value)
 
 
 @pytest.mark.parametrize(
