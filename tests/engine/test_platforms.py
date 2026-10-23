@@ -11,6 +11,7 @@ from hco_core.engine.platforms import (
     PLATFORMS,
     PlatformProfile,
     canonical_platform_name,
+    platform_name_of_mapping,
 )
 
 V1_PLATFORMS = ("CISCO_IOS", "CISCO_NXOS", "CISCO_XR", "ARISTA_EOS")
@@ -159,3 +160,24 @@ def test_canonical_platform_name_gives_the_name_of_a_platform_member(
 ) -> None:
     """A `Platform` member gives its name, never its positional value."""
     assert canonical_platform_name(platform) == platform.name
+
+
+@pytest.mark.parametrize(
+    ("value", "name"),
+    [
+        ("ios", "CISCO_IOS"),
+        ("eos ", "ARISTA_EOS"),
+        ("iosxr", "CISCO_XR"),
+        ("cisco_nxos", "CISCO_NXOS"),
+        ("ARISTA_EOS", "ARISTA_EOS"),
+    ],
+)
+def test_a_mapping_value_gives_the_platform_name(value: str, name: str) -> None:
+    """A `hier_config` v2 OS name or a platform name gives the platform name."""
+    assert platform_name_of_mapping(value) == name
+
+
+@pytest.mark.parametrize("value", ["generic", "GENERIC", "nope_os", "", "1"])
+def test_a_generic_or_unknown_mapping_value_gives_none(value: str) -> None:
+    """A value that maps to no platform, or only to GENERIC, gives None."""
+    assert platform_name_of_mapping(value) is None

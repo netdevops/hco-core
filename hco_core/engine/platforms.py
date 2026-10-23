@@ -5,12 +5,14 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Self
 
+from hier_config import Platform
 from hier_config.registry import get_hconfig_driver
+from hier_config.utils import hconfig_v2_os_v3_platform_mapper
 from pydantic import model_validator
 
 from hco_core.domain.apply import ApplyStrategy
 from hco_core.domain.base import BaseModel
-from hco_core.engine.errors import engine_errors
+from hco_core.engine.errors import UnknownPlatformError, engine_errors
 
 type SectionCommands = tuple[tuple[str, tuple[str, ...]], ...]
 
@@ -188,3 +190,19 @@ def canonical_platform_name(name: str) -> str:
     with engine_errors():
         get_hconfig_driver(platform_name)
     return platform_name.upper()
+
+
+def platform_name_of_mapping(value: str) -> str | None:
+    """Return the platform name of a `hier_config` v2 OS name or a platform name.
+
+    This reads a `network_driver_mappings["hier_config"]` value, such as `ios`.
+    A value that maps to no platform, or only to GENERIC, gives None.
+    """
+    platform = hconfig_v2_os_v3_platform_mapper(value)
+    if platform is not Platform.GENERIC:
+        return platform.name
+    try:
+        name = canonical_platform_name(value.strip())
+    except UnknownPlatformError:
+        return None
+    return None if name == Platform.GENERIC.name else name
