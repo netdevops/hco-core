@@ -127,7 +127,7 @@ class YamlSourceOfTruth:
         matched = [
             record
             for record in inventory.records.values()
-            if selector is None or _selected(record, selector)
+            if selector is None or selector.matches(record)
         ]
         start = int(cursor or 0)
         end = start + limit
@@ -321,20 +321,4 @@ def _problems(error: ValidationError) -> str:
     return "; ".join(
         f"{'.'.join(map(str, problem['loc']))}: {problem['msg']}"
         for problem in error.errors(include_input=False, include_url=False)
-    )
-
-
-def _selected(record: DeviceRecord, selector: DeviceSelector) -> bool:
-    """Return True if the record matches every field of the selector."""
-    fields = (
-        (selector.ids, record.id),
-        (selector.names, record.name),
-        (selector.platforms, record.platform_name),
-        (selector.roles, record.role),
-        (selector.sites, record.site),
-    )
-    return (
-        all(not wanted or value in wanted for wanted, value in fields)
-        and (not selector.tags_any or bool(selector.tags_any & record.tags))
-        and selector.tags_all <= record.tags
     )

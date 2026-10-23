@@ -35,7 +35,7 @@ def test_sync_writes_each_device_of_the_source_of_truth(api: Api) -> None:
     listed = api.call("GET", "/api/v1/devices")
 
     assert synced.status_code == HTTPStatus.OK
-    assert synced.json() == {"synced": 2}
+    assert synced.json() == {"synced": 2, "skipped": {}}
     devices = listed.json()["items"]
     assert [(item["sot_device_id"], item["name"]) for item in devices] == [
         ("r1", "edge-1"),
@@ -114,7 +114,7 @@ def test_an_empty_inventory_lists_zero_devices(api: Api) -> None:
     synced = api.call("POST", "/api/v1/devices/sync", actor=ACTOR)
     listed = api.call("GET", "/api/v1/devices")
 
-    assert synced.json() == {"synced": 0}
+    assert synced.json() == {"synced": 0, "skipped": {}}
     assert listed.json() == {"items": [], "next_cursor": None}
 
 
@@ -165,8 +165,8 @@ def test_an_unknown_device_is_404_naming_the_id(api: Api) -> None:
 
 
 SOT_DETAIL = (
-    "the source of truth is not readable; check HCO_SOT_PATH, "
-    "and read the server log for the cause"
+    "the source of truth is not readable; check HCO_SOT_PATH, or "
+    "HCO_NAUTOBOT_URL and HCO_NAUTOBOT_TOKEN, and read the server log"
 )
 
 
@@ -225,7 +225,7 @@ def test_a_sync_larger_than_one_statement_writes_every_device(
 
     response = api.call("POST", "/api/v1/devices/sync", actor=ACTOR)
 
-    assert response.json() == {"synced": LARGE_INVENTORY}
+    assert response.json() == {"synced": LARGE_INVENTORY, "skipped": {}}
     with engine.connect() as connection:
         assert (
             connection.execute(text("SELECT count(*) FROM hco.device")).scalar_one()

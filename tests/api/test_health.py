@@ -13,11 +13,20 @@ from sqlalchemy.exc import DBAPIError
 from structlog.testing import capture_logs
 
 from hco_core import __version__
+from hco_core.adapters.sot.nautobot import NautobotSourceOfTruth
+from hco_core.adapters.sot.yaml_file import YamlSourceOfTruth
 from hco_core.api.app import RequestIdMiddleware, app_from_env, create_app
-from hco_core.api.deps import ApiDeps, MissingValidationKeyError, build_deps
+from hco_core.api.deps import (
+    ApiDeps,
+    DevelopmentKeyError,
+    MissingValidationKeyError,
+    build_deps,
+    source_of_truth,
+    validation_key,
+)
 from hco_core.api.errors import PROBLEM_JSON, failure_reason
 from hco_core.db.session import create_database_engine, create_sessionmaker
-from hco_core.settings import CoreSettings
+from hco_core.settings import DEVELOPMENT_VALIDATION_KEY, CoreSettings
 from tests.api.conftest import Api
 
 if TYPE_CHECKING:
@@ -134,6 +143,30 @@ def test_the_dependencies_need_the_validation_key() -> None:
     """The mock connection verifies plan tokens with the key, so it is required."""
     with pytest.raises(MissingValidationKeyError, match="HCO_VALIDATION_KEY"):
         build_deps(CoreSettings(validation_key=None))
+
+
+def test_the_dependencies_refuse_the_development_key_with_a_real_connection() -> None:
+    """The key in development/.env is public, so only the mock connection takes it."""
+    public = SecretStr(DEVELOPMENT_VALIDATION_KEY)
+
+    with pytest.raises(DevelopmentKeyError, match="HCO_CONNECTION"):
+        build_deps(CoreSettings(validation_key=public, connection="scrapli"))
+    assert validation_key(CoreSettings(validation_key=public, connection="mock")) == (
+        DEVELOPMENT_VALIDATION_KEY.encode()
+    )
+
+
+def test_the_source_of_truth_comes_from_the_settings() -> None:
+    """`HCO_SOT` selects the adapter, and the Nautobot token stays a secret."""
+    assert isinstance(source_of_truth(CoreSettings()), YamlSourceOfTruth)
+    settings = CoreSettings(
+        sot="nautobot",
+        nautobot_url="https://nautobot.example",
+        nautobot_token=SecretStr("deps-token"),
+        nautobot_verify_ssl=False,
+        nautobot_timeout=5,
+    )
+    assert isinstance(source_of_truth(settings), NautobotSourceOfTruth)
 
 
 def test_the_request_id_middleware_passes_a_lifespan_scope_through(

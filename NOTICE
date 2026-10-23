@@ -5,7 +5,7 @@ Licensed under the Apache License, Version 2.0. See LICENSE.
 
 This product depends on software developed by third parties.
 
-Permissive (MIT, Apache-2.0, BSD-3-Clause, PSF-2.0)
+Permissive (MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, PSF-2.0)
 
   hier-config        MIT                  https://github.com/netdevops/hier_config
   pydantic           MIT                  https://github.com/pydantic/pydantic
@@ -23,10 +23,21 @@ Permissive (MIT, Apache-2.0, BSD-3-Clause, PSF-2.0)
   uvicorn[standard]  BSD-3-Clause         https://github.com/Kludex/uvicorn
       with httptools (MIT), uvloop (MIT OR Apache-2.0), watchfiles (MIT),
       websockets (BSD-3-Clause), and python-dotenv (BSD-3-Clause)
+  typer              MIT                  https://github.com/fastapi/typer
+      with a copy of click (BSD-3-Clause), rich (MIT), markdown-it-py (MIT),
+      mdurl (MIT), pygments (BSD-2-Clause), shellingham (ISC),
+      annotated-doc (MIT), and colorama (BSD-3-Clause, Windows only)
+  httpx              BSD-3-Clause         https://github.com/encode/httpx
+      with httpcore (BSD-3-Clause), h11 (MIT), anyio (MIT), and idna
+      (BSD-3-Clause)
 
 These impose no obligation beyond attribution.
 
 Weak copyleft
+
+  certifi            MPL-2.0              https://github.com/certifi/python-certifi
+      httpx loads the CA bundle of certifi, unmodified. LangGraph also
+      depends on httpx and certifi.
 
   psycopg, psycopg-binary, psycopg-pool    LGPL-3.0-only
       https://github.com/psycopg/psycopg

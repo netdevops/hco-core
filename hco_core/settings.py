@@ -2,18 +2,21 @@
 
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PSYCOPG_SCHEME = "postgresql+psycopg://"
 _PLAIN_SCHEMES = ("postgresql://", "postgres://")
+DEVELOPMENT_VALIDATION_KEY = "development-only-validation-key-0123456789"
+"""The public key in development/.env. Only the mock connection accepts it."""
 
 
-class CoreSettings(BaseSettings):
-    """Hold the settings that every hco-core process shares.
+class ClientSettings(BaseSettings):
+    """Hold the settings of a client of the REST API: its URL and the actor.
 
-    A validation error never shows the input, because a database URL holds a
+    A validation error never shows the input, because a URL can hold a
     password.
     """
 
@@ -25,6 +28,17 @@ class CoreSettings(BaseSettings):
         hide_input_in_errors=True,
     )
 
+    api_url: str = "http://localhost:8080"
+    actor: str | None = None
+
+
+class CoreSettings(ClientSettings):
+    """Hold the settings that every hco-core process shares.
+
+    A validation error never shows the input, because a database URL holds a
+    password.
+    """
+
     database_url: SecretStr = SecretStr(f"{PSYCOPG_SCHEME}hco:hco@localhost:5432/hco")
     log_level: Literal["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"] = "INFO"
     log_format: Literal["json", "console"] = "json"
@@ -32,15 +46,32 @@ class CoreSettings(BaseSettings):
     sot_path: Path = Path("inventory.yaml")
     connection: str = "mock"
     transcripts_dir: Path = Path("transcripts")
-    api_url: str = "http://localhost:8080"
-    actor: str | None = None
     validation_key: SecretStr | None = None
+    nautobot_url: str | None = None
+    nautobot_token: SecretStr | None = None
+    nautobot_verify_ssl: bool = True
+    nautobot_timeout: float = 30.0
+    nautobot_redundancy_tag_prefix: str = "hco-redundancy-"
 
     @field_validator("log_level", mode="before")
     @classmethod
     def upper_case_log_level(cls, value: object) -> object:
         """Accept a log level in any letter case."""
         return value.upper() if isinstance(value, str) else value
+
+    @field_validator("nautobot_url")
+    @classmethod
+    def drop_the_nautobot_userinfo(cls, value: str | None) -> str | None:
+        """Remove a user name and a password from the Nautobot URL.
+
+        The adapter sends the token, never a password, so a printed settings
+        object must not show one.
+        """
+        if value is None:
+            return None
+        parts = urlsplit(value)
+        host = parts.netloc.rpartition("@")[2]
+        return urlunsplit(parts._replace(netloc=host))
 
     @field_validator("database_url")
     @classmethod

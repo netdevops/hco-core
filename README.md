@@ -12,6 +12,40 @@ analysers can be written by anyone.
 pip install hco-core
 ```
 
+## Quick start
+
+Run a change on the YAML fixture to `APPROVED`, with the REST API and the
+`hco-core` command. You need Docker with Compose and Poetry. Run the commands
+in the repository folder:
+
+```bash
+docker compose -f development/docker-compose.yml up -d --build --wait
+docker compose -f development/docker-compose.yml exec hco-core-api hco-core db upgrade
+poetry install
+poetry run hco-core device sync --as alice
+poetry run hco-core run create --device r1 --as alice
+poetry run hco-core approval list
+poetry run hco-core approve <request_id> --as bob
+poetry run hco-core approve <request_id> --as carol
+poetry run hco-core run show <run_id>
+```
+
+- The stack starts Postgres and the API on `http://127.0.0.1:8080`. The API
+  reads `tests/fixtures/inventory.yaml` with the mock connection.
+- `run create` waits until the run is `AWAITING_APPROVAL`, then shows the
+  run id. `approval list` shows the request id of the run.
+- With no assessment layer, the risk tier is `HIGH`, so two persons who did
+  not request the change must approve it. After the second approval, the run
+  is `APPROVED`. No command writes to a device.
+- WARNING: The values in `development/.env` are public. hco-core refuses its
+  `HCO_VALIDATION_KEY` with a connection other than `mock`. Make a new key
+  before you use hco-core outside this stack.
+- If port 8080 is in use, set `HCO_API_PORT` in `development/.env` and
+  `HCO_API_URL` in your shell.
+
+Stop the stack and delete its data with
+`docker compose -f development/docker-compose.yml down -v`.
+
 ## The nine ports
 
 | Port | Responsibility |
@@ -300,8 +334,8 @@ them for development and for tests.
 - `EnvSecretsProvider()` reads credentials from environment variables.
 - `MockConnectionDriver(transcripts_dir, token_key=key)` replays transcripts.
 - `LogChannel()` writes each notification to the log.
-- `hco_core.adapters.registry` selects an adapter by its name: `yaml`, `env`,
-  `mock`, or `log`. It holds built-in factories only. An unknown name gives an error
+- `hco_core.adapters.registry` selects an adapter by its name: `yaml`,
+  `nautobot`, `env`, `mock`, or `log`. It holds built-in factories only. An unknown name gives an error
   that lists the known names.
 
 An inventory file holds devices and topology:
@@ -356,6 +390,108 @@ for each command, such as `show_version.txt`.
 - `apply()` verifies the validation token, then always raises
   `DeviceWritesDisabledError`. Phase 4 adds device writes.
 
+## Nautobot
+
+`NautobotSourceOfTruth` reads devices, intended configs, and topology from
+Nautobot. It only reads. It never writes to Nautobot.
+
+The request shapes target Nautobot 2.1 to 2.4 with the Golden Config app 2.x.
+The tests use recorded answers, not a live Nautobot. Do a check against your
+own Nautobot before you trust the adapter.
+
+Point hco-core at a Nautobot with these variables. Use a read-only API token.
+
+```bash
+export HCO_SOT=nautobot
+export HCO_NAUTOBOT_URL=https://nautobot.example.com
+export HCO_NAUTOBOT_TOKEN=<a read-only Nautobot API token>
+```
+
+The adapter reads these Nautobot objects:
+
+- Devices, with one GraphQL query (`POST /api/graphql/`) for each page of 500
+  devices or fewer: the name, the platform, the role, the location, the tags,
+  the primary IPv4 address, and the cable peer of each interface.
+- The platform name, from `platform.network_driver_mappings["hier_config"]`,
+  such as `ios` or `eos`. Set the network driver of each platform in Nautobot.
+- The intended config of the Golden Config app, from
+  `GET /api/plugins/golden-config/golden-config/?device_id=<id>`.
+- The config context of a device, with a GraphQL query.
+- Redundancy groups, from tags. The tag `hco-redundancy-core` puts each
+  device with that tag in the group `core`.
+- `GET /api/status/` for `health()`.
+
+The adapter relies on these GraphQL names. The lab run must confirm them
+against a real Nautobot:
+
+- `devices(limit:, offset:, id:, tags:)`
+- `platform.network_driver_mappings`
+- `primary_ip4.host`
+- `interfaces.cable_peer_interface.name` and
+  `interfaces.cable_peer_interface.device.id`
+- `role.name`, `location.name`, `tags.name`, and `config_context`
+
+A device sync names each skipped device. The answer of
+`POST /api/v1/devices/sync` holds `skipped`, a map of the device name to the
+reason, with 1000 devices or fewer. The log names every one. The command line
+shows one line for each:
+
+```text
+Synced 3 devices.
+Skipped 1 device:
+  - fw-1: the platform has no hier_config driver mapping
+```
+
+The adapter never does these things:
+
+- It never sends a PUT, a PATCH, or a DELETE. Each POST is a GraphQL query.
+- It never reads a secret from Nautobot. `secret_ref()` returns an `env`
+  reference. The key is `hco_secret_key` of the device config context. If
+  that key is not there, the key is the device name in upper case, with each
+  character other than a letter, a digit, or `_` changed to `_`. Set
+  `HCO_SECRET_<KEY>_USERNAME` and `HCO_SECRET_<KEY>_PASSWORD`, the same as
+  for the YAML adapter.
+- It never treats a device as GENERIC. A device with no platform, with no
+  `hier_config` mapping, with a mapping to GENERIC, or with no valid primary
+  IPv4 address is not in the page. `DevicePage.skipped` gives its name and
+  the reason, and the log line `device_skipped` names each one.
+- It never stores a control character. A device whose name, role, location,
+  or tag holds one, such as a NUL or an escape, is skipped. The skipped entry
+  uses the device id when the name holds the control character, else the name.
+- It never uses the intended config of another device. The Golden Config
+  answer must hold one row of the device, or no row. Another answer is an
+  error.
+
+Know these limits:
+
+- The device id is the Nautobot UUID.
+- `hco_secret_key` must be text of 1 to 128 characters. An error names the
+  device and the key, never the value.
+- hco-core does not read Nautobot Secrets Groups. A `NautobotSecretsProvider`
+  that reads them is Phase 2.
+- The selector applies after the query, so a page can hold fewer devices than
+  the limit.
+- Only a cable between two interfaces becomes a topology edge. The adapter
+  does not read circuits.
+- An answer larger than 16 MiB, nested more than 32 levels, not UTF-8, or not
+  of the expected shape is an error. An error never quotes Nautobot text.
+- A 401, a 403, another status that is not 2xx, or no answer raises
+  `SourceOfTruthUnreachableError`, an `OSError`. A device sync then answers
+  503. The log line `request_failed` gives the reason: `EACCES` for a refused
+  token, `ENOENT` for a 404, `ETIMEDOUT`, `ECONNREFUSED`, `EIO`, or `EPROTO`
+  for another status. Its `detail` gives the sentence of the adapter, such as
+  `refused the token with HTTP 401; check HCO_NAUTOBOT_TOKEN`.
+- A 404 from the Golden Config route says that the Golden Config app does not
+  answer.
+- The token must be printable ASCII. It is never in a log line, in `repr()`,
+  or in an error. The adapter and the settings drop a user name and a password
+  in `HCO_NAUTOBOT_URL`, and the adapter does not follow a redirect.
+
+WARNING: `HCO_NAUTOBOT_VERIFY_SSL=false` stops the check of the TLS
+certificate, so the token can go to a host that is not your Nautobot. Use it
+only in a lab. The adapter logs `nautobot_tls_verification_disabled` when you
+set it.
+
 ## Database and settings
 
 `hco_core.db` holds the Postgres schema of hco-core. It has eight tables in
@@ -379,7 +515,8 @@ schema `hco`: `device`, `config_snapshot`, `change_set`, `remediation_run`,
   `UNIQUE (run_id, channel, purpose)` permits one notification for each
   purpose.
 
-Upgrade the schema with `hco_core.db.migrate.upgrade(CoreSettings())`. The
+Upgrade the schema with `hco-core db upgrade`, or with
+`hco_core.db.migrate.upgrade(CoreSettings())`. The
 Alembic version table is `hco.alembic_version`.
 
 `CoreSettings` reads these environment variables. `.env.example` shows each
@@ -397,9 +534,14 @@ one with its default.
 | `HCO_API_URL` | `http://localhost:8080` |
 | `HCO_ACTOR` | not set |
 | `HCO_VALIDATION_KEY` | not set |
+| `HCO_NAUTOBOT_URL` | not set |
+| `HCO_NAUTOBOT_TOKEN` | not set |
+| `HCO_NAUTOBOT_VERIFY_SSL` | `true` |
+| `HCO_NAUTOBOT_TIMEOUT` | `30` seconds |
+| `HCO_NAUTOBOT_REDUNDANCY_TAG_PREFIX` | `hco-redundancy-` |
 
 - A `postgresql://` URL gets the psycopg dialect, `postgresql+psycopg://`.
-- `HCO_DATABASE_URL` and `HCO_VALIDATION_KEY` are secret. A printed settings
+- `HCO_DATABASE_URL`, `HCO_VALIDATION_KEY`, and `HCO_NAUTOBOT_TOKEN` are secret. A printed settings
   object and a settings error do not show them.
 - `hco_core.logging.configure_logging(settings)` sends structlog and
   standard-library log lines to stdout, as JSON or for a console.
@@ -726,7 +868,7 @@ with an `interrupt()` that only some runs reach, asks the person a different
 question on each run. The `interrupts` lint rule stops this in CI:
 
 ```bash
-poetry run python -m hco_core.lint.interrupts hco_core
+poetry run hco-core lint-interrupts hco_core
 ```
 
 The command prints each violation as `path:line: function: reason` and exits 1.
@@ -776,7 +918,8 @@ request closes.
 - A sync writes the devices in chunks of 1000 rows, in one transaction.
 - A sync adds and updates devices. It does not remove a device that is no
   longer in the inventory.
-- A 503 names the setting to check, `HCO_SOT_PATH` or `HCO_DATABASE_URL`. The
+- A 503 names the setting to check, `HCO_SOT_PATH`, `HCO_NAUTOBOT_URL` and
+  `HCO_NAUTOBOT_TOKEN`, or `HCO_DATABASE_URL`. The
   server log line `request_failed` gives the `cause` and the `reason`.
 
 WARNING: Any client can send any name in `X-HCO-Actor`. It is a development
@@ -903,6 +1046,58 @@ checkpoint of the interrupt. A decision that closes the request in that gap
 gets `run-not-parked`, and the run stays parked on the closed request. The
 run-state reconciler (R4, a later phase) closes both gaps.
 
+## The command line
+
+`hco-core` is a client of the REST API at `HCO_API_URL`. It approves only
+through `POST /api/v1/approvals/{id}/decide`. It never writes to the database,
+except `db upgrade`, and it never writes to a device.
+
+| Command | Does |
+|---|---|
+| `run create --device <id> [--title] [--no-wait] [--timeout]` | Starts a run, and waits until its review stops. |
+| `run list [--state]`, `run show <id>`, `run diff <id>` | Shows the runs, one run, or the remediation and the rollback of a run. |
+| `approval list` | Shows the pending approval requests of the parked runs. |
+| `approve <id> [--comment]`, `reject <id> --comment` | Decides on an approval request. |
+| `cancel <id> [--comment]` | Closes an approval request with no decision. |
+| `device list`, `device sync` | Shows the devices, or reads the source of truth. |
+| `db upgrade` | Upgrades the schema in `HCO_DATABASE_URL`, then makes the checkpointer tables. |
+| `serve api [--host] [--port]` | Starts the API on `127.0.0.1:8080`. |
+| `lint-interrupts <paths>` | Runs the rule of one unconditional `interrupt()` in each node. |
+
+- A command sends your user name in `X-HCO-Actor` as UTF-8. Give it with
+  `--as <name>`, or set `HCO_ACTOR`. A command that changes data needs it.
+  An `--as` that you give, also an empty one, is never replaced by
+  `HCO_ACTOR`. A name with a space at either end, or with a control or
+  invisible character, stops the command with exit code 2.
+- `run create` exits 0 when the run is `AWAITING_APPROVAL` or `APPROVED`, 1
+  when it ends in a different state such as `BLOCKED`, 2 for a bad option or
+  user name, and 3 when the wait times out. `--timeout` (0 to 3600 seconds) also limits each request.
+- If the API does not answer a change in time, it may have done the change.
+  Check with `run list` or `approval list` before you try again.
+- `approve`, `reject`, and `cancel` take the approval request id.
+  `approval list` shows the run of each request.
+- A list shows a table. `--limit` and `--cursor` move through the pages.
+- `--json` prints the answer of the API as JSON. `run diff --json` also gives
+  the future config.
+- An error is one sentence on stderr, and the exit code is 1. With `--json`,
+  stdout also gets the problem document. A message never shows a password
+  from `HCO_API_URL` or `HCO_DATABASE_URL`.
+- The CLI removes control characters from each text of the API before it
+  prints it.
+- The commands of the API read only `HCO_API_URL` and `HCO_ACTOR`.
+  `db upgrade` and `serve api` read all the `HCO_` settings.
+
+With the API from "The REST API" on port 8080, Alice requests a run, and Bob
+and Carol approve it:
+
+```bash
+poetry run hco-core device sync --as alice
+poetry run hco-core run create --device r1 --as alice
+poetry run hco-core approval list
+poetry run hco-core approve <request_id> --as bob
+poetry run hco-core approve <request_id> --as carol
+```
+
 ## Requirements
 
 Python 3.12 to 3.14.
@@ -938,7 +1133,7 @@ poetry run ruff format --check .
 poetry run ruff check .
 poetry run mypy hco_core
 poetry run pyright
-poetry run python -m hco_core.lint.interrupts hco_core
+poetry run hco-core lint-interrupts hco_core
 poetry run pytest --cov=hco_core
 ```
 

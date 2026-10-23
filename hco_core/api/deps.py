@@ -9,11 +9,13 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from hco_core.adapters import registry
 from hco_core.db.session import create_database_engine, create_sessionmaker
 from hco_core.db.types import ULID_LENGTH
+from hco_core.engine.validation import MIN_KEY_BYTES
 from hco_core.graphs.review import ApprovalDeps, AssessmentHook
+from hco_core.ports import SourceOfTruth
 from hco_core.services.ledger import NotificationLedger
 from hco_core.services.resume import review_with_resume
 from hco_core.services.runs import RunRepository
-from hco_core.settings import CoreSettings
+from hco_core.settings import DEVELOPMENT_VALIDATION_KEY, CoreSettings
 
 API_PREFIX: Final = "/api/v1"
 DEFAULT_PAGE: Final = 50
@@ -34,6 +36,80 @@ class MissingValidationKeyError(ValueError):
         super().__init__("set HCO_VALIDATION_KEY to at least 32 random bytes")
 
 
+class ShortValidationKeyError(ValueError):
+    """`HCO_VALIDATION_KEY` is shorter than `MIN_KEY_BYTES`."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            f"HCO_VALIDATION_KEY must have at least {MIN_KEY_BYTES} bytes; "
+            'make a new key with: python -c "import secrets; '
+            'print(secrets.token_hex(32))"'
+        )
+
+
+class DevelopmentKeyError(ValueError):
+    """`HCO_VALIDATION_KEY` is the public development key, with a real connection."""
+
+    def __init__(self, connection: str) -> None:
+        super().__init__(
+            f"HCO_VALIDATION_KEY is the public key of development/.env, and "
+            f"HCO_CONNECTION is {connection!r}; only the mock connection accepts it. "
+            'Make a new key with: python -c "import secrets; '
+            'print(secrets.token_hex(32))"'
+        )
+
+
+def refuse_development_key(settings: CoreSettings) -> None:
+    """Refuse the public development key for a connection other than `mock`.
+
+    Raises:
+        DevelopmentKeyError: If the key is the development key and the
+            connection is not `mock`.
+
+    """
+    key = settings.validation_key
+    if (
+        key is not None
+        and key.get_secret_value() == DEVELOPMENT_VALIDATION_KEY
+        and settings.connection != "mock"
+    ):
+        raise DevelopmentKeyError(settings.connection)
+
+
+def validation_key(settings: CoreSettings) -> bytes:
+    """Return the key that signs and verifies the plan tokens.
+
+    `refuse_development_key` also refuses the public development key.
+
+    Raises:
+        MissingValidationKeyError: If `HCO_VALIDATION_KEY` is not set.
+        ShortValidationKeyError: If the key is shorter than `MIN_KEY_BYTES`.
+
+    """
+    if settings.validation_key is None:
+        raise MissingValidationKeyError
+    refuse_development_key(settings)
+    key = settings.validation_key.get_secret_value().encode()
+    if len(key) < MIN_KEY_BYTES:
+        raise ShortValidationKeyError
+    return key
+
+
+def source_of_truth(settings: CoreSettings) -> SourceOfTruth:
+    """Return the source of truth that `HCO_SOT` names, with its settings."""
+    options = {
+        "path": str(settings.sot_path),
+        "verify_ssl": str(settings.nautobot_verify_ssl),
+        "timeout": str(settings.nautobot_timeout),
+        "redundancy_tag_prefix": settings.nautobot_redundancy_tag_prefix,
+    }
+    if settings.nautobot_url is not None:
+        options["url"] = settings.nautobot_url
+    return registry.source_of_truth(
+        settings.sot, options, token=settings.nautobot_token
+    )
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ApiDeps:
     """The database and the review graph dependencies that the routes use.
@@ -51,27 +127,22 @@ class ApiDeps:
 def build_deps(settings: CoreSettings) -> ApiDeps:
     """Build the dependencies from the adapter names and options of the settings.
 
-    Raises:
-        MissingValidationKeyError: If `HCO_VALIDATION_KEY` is not set.
-
+    `validation_key` refuses a missing key and the development key with a
+    real connection.
     """
-    if settings.validation_key is None:
-        raise MissingValidationKeyError
-    validation_key = settings.validation_key.get_secret_value().encode()
+    token_key = validation_key(settings)
     engine = create_database_engine(settings)
     sessions = create_sessionmaker(engine)
     review = review_with_resume(
         settings,
         sessions,
         lambda approvals: ApprovalDeps(
-            sot=registry.source_of_truth(
-                settings.sot, {"path": str(settings.sot_path)}
-            ),
+            sot=source_of_truth(settings),
             secrets=registry.secrets("env", {}),
             connection=registry.connection(
                 settings.connection,
                 {"transcripts_dir": str(settings.transcripts_dir)},
-                token_key=validation_key,
+                token_key=token_key,
             ),
             runs=RunRepository(sessions),
             approvals=approvals,

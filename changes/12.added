@@ -1,0 +1,3 @@
+Added the `hco-core` command: `run create|list|show|diff`, `approve`, `reject`, `cancel`, `approval list`, and `device list|sync`. It talks only to the REST API at `HCO_API_URL`.
+Added `hco-core run create`, which waits until the run is `AWAITING_APPROVAL` or ends, and shows the run id and the state.
+Added the `--as` option and `HCO_ACTOR` for your user name, and `--json` for the raw answer of the API.
