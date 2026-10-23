@@ -68,6 +68,28 @@ def _nautobot(options: Options, token: SecretStr | None) -> SourceOfTruth:
     )
 
 
+def _scrapli(_: Options, key: bytes) -> ConnectionDriver:
+    """Build the scrapli driver. It needs the `scrapli` extra.
+
+    The import is local, so the registry loads without the extra and a
+    configuration that does not name `scrapli` never imports it.
+
+    Raises:
+        AdapterConfigError: If the `scrapli` package is not installed.
+
+    """
+    try:
+        from hco_core.adapters.conn.scrapli import (  # ruff: ignore[import-outside-top-level]
+            ScrapliConnectionDriver,
+        )
+    except ImportError:
+        message = (
+            "the scrapli adapter needs the scrapli package; install hco-core[scrapli]"
+        )
+        raise AdapterConfigError(message) from None
+    return ScrapliConnectionDriver(token_key=key)
+
+
 _SOURCES_OF_TRUTH: Mapping[
     str, Callable[[Options, SecretStr | None], SourceOfTruth]
 ] = MappingProxyType(
@@ -83,7 +105,8 @@ _CONNECTIONS: Mapping[str, Callable[[Options, bytes], ConnectionDriver]] = (
         {
             "mock": lambda options, key: MockConnectionDriver(
                 Path(_option(options, "mock", "transcripts_dir")), token_key=key
-            )
+            ),
+            "scrapli": _scrapli,
         }
     )
 )
@@ -109,7 +132,8 @@ def source_of_truth(
 def connection(name: str, options: Options, *, token_key: bytes) -> ConnectionDriver:
     """Return the connection driver with the name.
 
-    `mock` needs the `transcripts_dir` option. The key verifies plan tokens.
+    `mock` needs the `transcripts_dir` option. `scrapli` needs no option and
+    the `scrapli` extra. The key verifies plan tokens.
     """
     return _factory("connection", _CONNECTIONS, name)(options, token_key)
 

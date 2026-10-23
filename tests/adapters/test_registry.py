@@ -1,11 +1,13 @@
 """The registry maps adapter names to built-in factories."""
 
+import sys
 from pathlib import Path
 
 import pytest
 from pydantic import SecretStr
 
 from hco_core.adapters import registry
+from hco_core.adapters.conn.scrapli import ScrapliConnectionDriver
 from hco_core.adapters.errors import AdapterConfigError
 from hco_core.adapters.sot.nautobot import NautobotSourceOfTruth
 from hco_core.ports import (
@@ -29,6 +31,9 @@ def test_each_built_in_name_builds_its_adapter() -> None:
     assert isinstance(
         registry.connection("mock", options, token_key=KEY), ConnectionDriver
     )
+    assert isinstance(
+        registry.connection("scrapli", {}, token_key=KEY), ScrapliConnectionDriver
+    )
     assert isinstance(registry.secrets("env", {}), SecretsProvider)
     assert isinstance(registry.notification_channel("log", {}), NotificationChannel)
 
@@ -37,12 +42,23 @@ def test_an_unknown_name_lists_the_known_names() -> None:
     """The error names the kind and every known name."""
     with pytest.raises(AdapterConfigError, match=r"sot.*'mod\.path'.*nautobot, yaml"):
         registry.source_of_truth("mod.path", {})
-    with pytest.raises(AdapterConfigError, match=r"connection.*mock"):
-        registry.connection("scrapli", {}, token_key=KEY)
+    with pytest.raises(AdapterConfigError, match=r"connection.*mock, scrapli"):
+        registry.connection("netmiko", {}, token_key=KEY)
     with pytest.raises(AdapterConfigError, match=r"secrets.*env"):
         registry.secrets("vault", {})
     with pytest.raises(AdapterConfigError, match=r"notify.*log"):
         registry.notification_channel("slack", {})
+
+
+def test_scrapli_names_its_extra_when_the_package_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without the `scrapli` extra, the error says how to install it."""
+    monkeypatch.setitem(sys.modules, "scrapli", None)
+    monkeypatch.delitem(sys.modules, "hco_core.adapters.conn.scrapli", raising=False)
+
+    with pytest.raises(AdapterConfigError, match=r"hco-core\[scrapli\]"):
+        registry.connection("scrapli", {}, token_key=KEY)
 
 
 def test_a_missing_option_is_named() -> None:

@@ -96,7 +96,7 @@ def test_serve_api_starts_uvicorn_with_the_app_factory(
             },
             "HCO_CONNECTION",
         ),
-        ({"HCO_VALIDATION_KEY": KEY, "HCO_CONNECTION": "scrapli"}, "HCO_CONNECTION"),
+        ({"HCO_VALIDATION_KEY": KEY, "HCO_CONNECTION": "netmiko"}, "HCO_CONNECTION"),
         ({"HCO_VALIDATION_KEY": KEY, "HCO_SOT": "nautobotx"}, "HCO_SOT"),
         ({"HCO_VALIDATION_KEY": "abc"}, "HCO_VALIDATION_KEY"),
     ],
