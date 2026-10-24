@@ -37,9 +37,10 @@ The Alembic schema has eight tables:
 
 The database refuses some changes itself, also from a direct SQL statement:
 
-- A trigger refuses a decision by the person who requested the change.
-- A trigger refuses a change of the requester of an approval request.
-- A requester or an actor must not be empty and must have no white space at either end. The comparison is case-sensitive.
+- A trigger refuses a decision by the person who requested the change, also on a direct `INSERT` or `UPDATE`.
+- A trigger refuses a change of the requester of an approval request, also through `INSERT ... ON CONFLICT DO UPDATE`.
+- A requester or an actor must not be empty. It must have no white space at either end, such as a space, a tab, a new line, or a non-breaking space.
+- The trigger compares the names with case sensitivity.
 - `device.platform_name` must be in upper case and must not be a number.
 - One person can make one decision on each approval request.
 - hco-core sends one notification for each run, channel, and purpose.

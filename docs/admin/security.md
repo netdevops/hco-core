@@ -31,6 +31,6 @@ The scrapli connection checks the host key of each device. Add each host key to 
 ## What hco-core does not do
 
 - No API route and no command writes to a device in Phase 1.
-- The `hco-core` command writes to the database only with `db upgrade`. Other commands use the API.
+- Only `hco-core db upgrade` writes to the database directly. `hco-core serve api` starts the API. The other commands, except `lint-interrupts`, are clients of the API.
 - hco-core never reads a credential from the source of truth.
 - An API error never shows a config text, a `metadata` value, or a database URL.

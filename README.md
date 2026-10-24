@@ -7,7 +7,7 @@ hco-core compares the running config of a network device with its intended confi
 
 hco-core has these parts:
 
-- **Ports:** Nine `typing.Protocol` contracts for a source of truth, a device connection, a secrets store, a model, a risk analyser, and other services. Anyone can write an adapter for them.
+- **Ports:** Nine port contracts, as `typing.Protocol` classes. They cover a source of truth, a device connection, a secrets store, a model, a risk analyser, and other services. Anyone can write an adapter for them.
 - **Engine:** The remediation, the config facts of a change, and the validation gate that signs a safe plan.
 - **Review service:** A REST API, a command line, and a Postgres database. They record each run and each approval.
 - **Adapters:** A YAML file and Nautobot as the source of truth, and transcript files and scrapli for device reads.

@@ -1,2 +1,2 @@
 Added a documentation site in `docs/`, with separate guides for admins, users, and developers.
-Changed the README to hold only a description of hco-core and the quick start. The other content is now in `docs/`.
+Changed the README to hold only a description of hco-core and the quick start.

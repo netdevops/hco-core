@@ -6,10 +6,12 @@
 
 `hco_core.services.approval.ApprovalService` records approvals for each surface.
 
-- `upsert_request()` opens one request for each change set. It copies the requester from `change_set.requested_by`. A second call returns the same request and never changes the requester.
+- `upsert_request()` opens one request for each change set. The requester must match `change_set.requested_by` exactly. If it does not, `upsert_request()` raises `RequesterMismatchError`.
+- A second call to `upsert_request()` returns the same request. It never changes the requester.
 - `decide()` records one decision. Each decision writes one `audit_event` row.
 - One rejection rejects the request.
-- The approvals close the request when they reach the count of the risk tier in `hco_core.policy.tiers.APPROVALS_BY_TIER`: one for `LOW` and `MEDIUM`, two for `HIGH` and `CRITICAL`.
+- The approvals close the request when they reach `required_count`. That count is never below the count of the risk tier in `hco_core.policy.tiers.APPROVALS_BY_TIER`.
+- The tier count is one for `LOW` and `MEDIUM`, and two for `HIGH` and `CRITICAL`.
 - When a decision closes the request, `decide()` calls the `resume` callback one time. Phase 1 does not check roles.
 - `cancel()` closes a pending request with no decision. It writes one `audit_event` row and calls the `resume` callback one time with no decision.
 - Any valid actor can cancel, also the requester, because a cancel only stops a change.
@@ -22,7 +24,9 @@ The service raises these typed errors:
 |---|---|
 | `RequesterMayNotApproveError` | The requester decides on their own change. |
 | `DuplicateDecisionError` | The actor already decided on the request. |
-| `InvalidActorError` | A name is empty, has white space at an end, or has a control or invisible character. |
+| `InvalidActorError` | A name is empty, has more than 255 characters, has white space at an end, or has a control or invisible character. |
+| `RequesterMismatchError` | The requester is not `change_set.requested_by`, or no change set has the id. |
+| `ApprovalRequestNotFoundError` | No request has the id. |
 | `ApprovalClosedError` | The request is not pending, or it expired. |
 | `QuorumMismatchError` | A later `upsert_request()` asks for more approvals than the open request needs. |
 | `NaiveExpiryError` | `expires_at` has no time zone. |

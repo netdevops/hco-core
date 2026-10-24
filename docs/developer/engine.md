@@ -124,14 +124,14 @@ assert freshness_verdict(RiskTier.HIGH, "fp-1", "fp-1") == "recollect"
 The checks run in this order. The first check that fails blocks the plan:
 
 1. **Shape:** The plan is not empty. Each line is printable ASCII, has no tab, and is not blank.
-2. **Parse:** The driver reads each line exactly as written. The check blocks a repeated section, a line that the driver drops (such as `end`), a line that the driver changes, and a line under a negation.
+2. **Parse:** The driver reads each line exactly as written. The check blocks a repeated section and a line under a negation. It also blocks a line that the driver drops, such as `end`, or changes.
 3. **Destructive:** The check blocks the stems `relo`, `wr ... e`, `erase`, `crypto key zeroiz`, `forma`, and `req ... sy`, also after `do `, in any case.
 4. **Future report:** The check blocks a negation that matches nothing in the running config.
 5. **Convergence:** The lines of the future config of the plan and of the deterministic remediation are the same set.
 6. **Fixed point:** After the plan, `hier_config` finds no remediation to do.
 7. **Scaffolding:** Only a numbered permit-any entry can be scaffolding, such as `5 permit ip any any`. These conditions apply:
     - The pair has no child lines.
-    - The removal names the entry exactly, or by its sequence number with no leading zero.
+    - The removal names the entry exactly, or by its sequence number. The sequence number has no leading zero.
     - No running entry has that number.
     - The access list is at the top level.
     - The plan removes another entry of the access list.

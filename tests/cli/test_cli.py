@@ -435,7 +435,10 @@ def test_an_unreachable_api_names_hco_api_url_and_hides_the_password() -> None:
     assert "s3cret" not in result.output
     assert "user" not in result.output
     assert "serve api" not in result.output
-    assert "docs/admin/install.md" in result.output
+    assert (
+        "https://github.com/netdevops/hco-core/blob/develop/docs/admin/install.md"
+        in result.output
+    )
     assert result.output.count("\n") == 1
 
 

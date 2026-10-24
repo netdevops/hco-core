@@ -2,16 +2,18 @@
 
 The `hco-core` command is a client of the REST API. It sends requests to `HCO_API_URL`. It never writes to a device.
 
+The command approves only through `POST /api/v1/approvals/{id}/decide`.
+
 ## Your user name
 
-A command that changes data sends your user name. Give the name in one of these two ways:
+A command that changes data sends your user name in the `X-HCO-Actor` header, as UTF-8. Give the name in one of these two ways:
 
 - Use the `--as <name>` option.
 - Set `HCO_ACTOR` in your shell.
 
 When you give `--as`, the command does not use `HCO_ACTOR`, also when `--as` is empty.
 
-A name must not have a space at either end. It must not hold a control character or an invisible character. A wrong name stops the command with exit code 2.
+A name must have 255 characters or fewer. It must not have white space at either end. It must not hold a control character or an invisible character. A wrong name stops the command with exit code 2.
 
 ## Commands
 

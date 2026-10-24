@@ -7,9 +7,14 @@ hco-core reads device credentials from environment variables. The source of trut
 | Source of truth | Key |
 |---|---|
 | YAML | The `secret` field of the device. The default is the device id. |
-| Nautobot | `hco_secret_key` in the config context of the device. The default is the device name. |
+| Nautobot | `hco_secret_key` in the config context of the device. |
 
-`hco_secret_key` must be text of 1 to 128 characters.
+For Nautobot, these rules apply:
+
+- `hco_secret_key` must be text of 1 to 128 characters.
+- An error about `hco_secret_key` names the device and the key, never the value.
+- If the config context has no `hco_secret_key`, the key is the device name in upper case. hco-core changes each character other than a letter, a digit, or `_` to `_`. If the device has no name, hco-core uses the device id.
+- hco-core does not read Nautobot Secrets Groups. Phase 2 adds a `NautobotSecretsProvider` that reads them.
 
 ## The variables
 
@@ -30,11 +35,14 @@ To make `<KEY>`, write the key in upper case. Change each character that is not 
 | `edge-1` | `HCO_SECRET_EDGE_1_PASSWORD` |
 
 - Two keys that differ only in these characters, such as `a-b` and `a_b`, read the same variables.
-- A blank value is the same as no value.
 - An error names the variable, never its value.
+
+For example, the mock connection reads the credentials of device `r1` from `HCO_SECRET_R1_USERNAME` and `HCO_SECRET_R1_PASSWORD`.
 
 ## The enable secret
 
 scrapli sends the enable secret when the login user is not in privileged exec mode. Without `_ENABLE`, the login user needs privilege 15.
+
+A blank `HCO_SECRET_<KEY>_ENABLE` is the same as no enable secret. A blank user name, password, or API key is an empty value.
 
 A private key is not used in Phase 1.

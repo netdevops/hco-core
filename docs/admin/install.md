@@ -30,25 +30,27 @@ Do these steps in this order:
 2. Set `HCO_DATABASE_URL` and the other settings. See [Configuration](configuration.md).
 3. Upgrade the database schema:
 
-   ```bash
-   hco-core db upgrade
-   ```
+    ```bash
+    hco-core db upgrade
+    ```
 
-4. Start the API:
+4. Start the API. It listens on `127.0.0.1:8080` by default:
 
-   ```bash
-   hco-core serve api --host 127.0.0.1 --port 8080
-   ```
+    ```bash
+    hco-core serve api
+    ```
 
 5. Read the inventory into the database:
 
-   ```bash
-   hco-core device sync --as <your name>
-   ```
+    ```bash
+    hco-core device sync --as <your name>
+    ```
 
-You can also start the API with uvicorn:
+You can also start the API with uvicorn. This example uses the YAML inventory and the mock connection:
 
 ```bash
+export HCO_SOT_PATH=inventory.yaml HCO_TRANSCRIPTS_DIR=transcripts
+export HCO_VALIDATION_KEY=$(python -c "import secrets; print(secrets.token_hex(32))")
 uvicorn --factory hco_core.api.app:app_from_env --port 8080
 ```
 

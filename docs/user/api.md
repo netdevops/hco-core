@@ -4,6 +4,8 @@ The API is at `/api/v1`. `GET /openapi.json` gives the OpenAPI schema. The API s
 
 No route writes to a device. A run stops at `AWAITING_APPROVAL` until its approval request closes.
 
+The API never sets a run state. The review graph sets it. `POST /api/v1/approvals/{id}/decide` is the only route that approves a change.
+
 ## Routes
 
 | Route | Does |
@@ -27,7 +29,9 @@ A request that changes data needs the `X-HCO-Actor` header. Without it, the API 
 
 - Send the name as UTF-8.
 - The API stores the NFKC form of the name.
-- The name must not be empty. It must not have white space at either end, and it must not hold a control character or an invisible character.
+- The name must not be empty. It must have 255 characters or fewer.
+- The name must not have white space at either end. It must not hold a control character or an invisible character.
+- A name that is not valid gets 400 with the type `invalid-actor`.
 
 ## Lists
 
@@ -51,13 +55,18 @@ The approval routes use these problem types:
 | `requester-may-not-approve` | 403 | The requester decides on their own change. |
 | `duplicate-decision` | 409 | The actor already decided on the request. |
 | `approval-closed` | 409 | The request is approved, rejected, cancelled, or expired. |
-| `run-not-awaiting-approval` | 409 | The request is pending, but its run does not wait. Nothing is written. |
+| `run-not-awaiting-approval` | 409 | The request is pending, but its run does not wait. For a cancel: the review of the run did not get to `AWAITING_APPROVAL`. Nothing is written. |
 | `run-not-parked` | 409 | The decision closed the request, but the run does not wait. The decision stays recorded. |
 | `approval-pending` | 409 | The request is still pending. The run continues to wait. |
 | `quorum-mismatch` | 409 | A request asks for more approvals than the open request needs. |
 | `approval-not-found` | 404 | No request has the id. |
 
 A 500 or a 503 after the request closes also keeps the decision recorded.
+
+## Device sync
+
+- A sync writes the devices in chunks of 1000 rows, in one transaction.
+- A sync adds and updates devices. It does not remove a device that is no longer in the source of truth.
 
 ## Examples
 

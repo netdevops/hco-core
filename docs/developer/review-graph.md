@@ -6,7 +6,7 @@
 
 1. `collect_running` reads the device of the run from the source of truth, with the id and the platform of the `device` row. It reads the intended config and the running config, and stores both snapshots.
 2. `build_remediation` builds the remediation, the rollback, and the future config, with the plugins and the tag rules of `ReviewDeps`. It stores the future snapshot and puts the config-derived facts in `evidence["config_derived"]`.
-3. The convergence gate sends a remediation with an unresolved negation to `blocked`. No node after the gate runs then. An unresolved negation is a `no` line that matches nothing in the running config. The run error names each such line.
+3. The convergence gate sends a remediation with an unresolved negation to `blocked`. No node after the gate runs then. An unresolved negation is a `no` line that matches nothing in the running config. The run error names the first five such lines and gives the number of the others.
 
 These conditions also stop the run in `BLOCKED`, with the error in `remediation_run.error`:
 

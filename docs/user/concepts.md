@@ -11,7 +11,7 @@ A run reviews one change on one device. You start a run, and hco-core does these
 5. It sets the risk tier.
 6. It sends a notification and opens an approval request.
 7. It waits for the approvers.
-8. It records the result.
+8. It records the result and sends a second notification with the result.
 
 ## Run states
 
@@ -32,7 +32,7 @@ The other states, such as `APPLYING` and `COMMITTED`, are for device writes. Pha
 A run stops in `BLOCKED` in these conditions:
 
 - The source of truth, the device, or the engine gave an error.
-- The remediation has a `no` line that matches nothing in the running config. The error names each such line.
+- The remediation has a `no` line that matches nothing in the running config. The run error names the first five such lines and gives the number of the others.
 - Somebody cancelled the approval request while the run waited.
 
 ## Risk tiers
@@ -50,8 +50,9 @@ Phase 1 has no risk assessment. Each run therefore gets the tier `HIGH` and need
 
 ## Approvals
 
-- The person who requested the change cannot approve it.
+- The person who requested the change cannot approve or reject it. hco-core compares the names with no difference for letter case.
 - Each person can decide one time on each request.
+- A request expires 72 hours after it opens.
 - One rejection rejects the request.
 - When the request has enough approvals, the run is `APPROVED`.
 - Any person can cancel a pending request, also the requester. A cancel only stops a change. A waiting run then stops in `BLOCKED`.

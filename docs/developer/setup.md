@@ -2,11 +2,13 @@
 
 ## Install
 
-Install the package and the development tools:
+Install the package, the development tools, the scrapli extra, and MkDocs:
 
 ```bash
-poetry install
+poetry install --all-extras --with docs
 ```
+
+Without the scrapli extra, the scrapli tests skip.
 
 ## The test database
 
@@ -32,22 +34,23 @@ poetry run mypy hco_core
 poetry run pyright
 poetry run hco-core lint-interrupts hco_core
 poetry run pytest --cov=hco_core
+poetry run pytest -q tests/engine/test_validation.py --cov=hco_core.engine.validation --cov-branch --cov-fail-under=100
+poetry check --lock
+poetry run towncrier build --draft --version 0.0.0
+poetry run mkdocs build --strict
 ```
+
+The validation gate needs 100% branch coverage.
 
 ## The documentation
 
 The documentation uses MkDocs. Preview it on `http://127.0.0.1:8000`:
 
 ```bash
-poetry install --with docs
 poetry run mkdocs serve
 ```
 
-Build it with the strict check before you open a pull request:
-
-```bash
-poetry run mkdocs build --strict
-```
+The gate builds the site with `--strict`, so a broken link fails the build.
 
 Write the documentation in ASD-STE100 Simplified Technical English.
 

@@ -38,7 +38,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: pipx install poetry
       - run: poetry check --lock
-      - run: poetry install --no-interaction --all-extras
+      - run: poetry install --no-interaction --all-extras --with docs
       - name: Render the changelog fragments
         run: poetry run towncrier build --draft --version 0.0.0
       - run: poetry run ruff format --check .
@@ -50,6 +50,8 @@ jobs:
       - run: poetry run pytest -q --cov=hco_core --cov-report=term-missing --cov-fail-under=95
       - name: Hold the validation gate at 100% line and branch coverage
         run: poetry run pytest -q tests/engine/test_validation.py --cov=hco_core.engine.validation --cov-branch --cov-report=term-missing --cov-fail-under=100
+      - name: Build the documentation site, and fail on a broken link
+        run: poetry run mkdocs build --strict
 
   # Advisory only. Reports green even when the required jobs above fail, so
   # read it alongside them rather than on its own. Promote to the matrix when
@@ -80,7 +82,7 @@ jobs:
           python-version: "3.14"
       - run: pipx install poetry
       - run: poetry check --lock
-      - run: poetry install --no-interaction --all-extras
+      - run: poetry install --no-interaction --all-extras --with docs
       # The same checks as the required jobs, so an advisory pass means the
       # same thing they do.
       - name: Render the changelog fragments
@@ -94,3 +96,5 @@ jobs:
       - run: poetry run pytest -q --cov=hco_core --cov-report=term-missing --cov-fail-under=95
       - name: Hold the validation gate at 100% line and branch coverage
         run: poetry run pytest -q tests/engine/test_validation.py --cov=hco_core.engine.validation --cov-branch --cov-report=term-missing --cov-fail-under=100
+      - name: Build the documentation site, and fail on a broken link
+        run: poetry run mkdocs build --strict

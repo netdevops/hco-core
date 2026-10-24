@@ -7,7 +7,7 @@ A port is a contract between hco-core and an adapter. The ports and the domain m
 | Port | Responsibility |
 |---|---|
 | `SourceOfTruth` | Inventory, intended configuration, topology, and opaque secret references. |
-| `ConnectionDriver` / `DeviceSession` | Device access, with dry run, apply, confirm, and rollback. |
+| `ConnectionDriver` / `DeviceSession` | Device access that knows the config format, with dry run, apply, confirm, and rollback. |
 | `SecretsProvider` | Changes an opaque `SecretRef` into a credential. |
 | `ConfigBackend` | The place where configurations are read from, and proposals written to. |
 | `VectorStore` | Runbooks, documentation, and past changes. |
@@ -67,11 +67,13 @@ hco-core does not hold these items:
 - The prompts that get findings from a model.
 - The labelled data that measures the quality of an assessment.
 
+An interface is not a moat.
+
 ## Design rules
 
-**Store the platform name, never the platform value.** The `Platform` of `hier_config` is a `(str, Enum)` with `auto()`. Its values are the counters `"1"` to `"13"`. A new member upstream changes every value after it, and stored rows then change their meaning. `DeviceRecord.platform_name` holds `Platform.CISCO_IOS.name`, or a custom platform name that you register with `register_driver()`.
+**Store the platform name, never the platform value.** The `Platform` of `hier_config` is a `(str, Enum)` with `auto()`. Its values are positional counters, such as `"1"` and `"2"`. A new member upstream changes every value after it, and stored rows then change their meaning. `DeviceRecord.platform_name` holds `Platform.CISCO_IOS.name`, or a custom platform name that you register with `register_driver()`.
 
-**Only some apply strategies can be part of an atomic change set.** `ApplyStrategy.reverts_without_orchestrator` tells which strategies. A confirm timer on the device continues to work when the orchestrator stops, when the network partitions, or when the change cuts the path to the device. Cisco IOS has no native confirmed commit. A change set with an IOS device therefore cannot be fully atomic, and hco-core makes this fact available to a check.
+**Only some apply strategies can be part of an atomic change set.** `ApplyStrategy.reverts_without_orchestrator` tells which strategies. A confirm timer on the device continues to work when the orchestrator stops or the network partitions. It also works when the change cuts the path to the device. Cisco IOS has no native confirmed commit. A change set with an IOS device therefore cannot be fully atomic, and hco-core makes this fact available to a check.
 
 **Send configuration as `hier_config` `Dump` JSON, never as rendered text.** The render depends on the sort order and the indentation, and it drops tags. Rendered text therefore loses data.
 

@@ -31,6 +31,7 @@ topology:
     core: [s1, x1]
 ```
 
+- Each device holds the `DeviceRecord` fields: `id`, `name`, `platform_name`, `mgmt_address`, and the optional `role`, `site`, `criticality`, `tags`, `config_format`, `in_maintenance`, and `metadata`.
 - `platform_name` must be a platform name that `hier_config` knows, in the exact case, such as `CISCO_IOS`. The error gives the correct name.
 - `intended_config` is a path inside the folder of the inventory file.
 - `secret` is the key of the device credentials. The default is the device id. See [Secrets](secrets.md).
@@ -91,7 +92,7 @@ A device sync skips a device in these conditions:
 - The device has no valid primary IPv4 address.
 - The name, the role, the location, or a tag holds a control character, such as a NUL or an escape.
 
-The sync names each skipped device and the reason. The API answer holds `skipped`, with 1000 devices or fewer. The log line `device_skipped` names every one. The command shows one line for each:
+The sync names each skipped device and the reason. The API answer holds `skipped`, a map of the device name to the reason, with 1000 devices or fewer. When the name holds a control character, the map uses the device id. The log line `device_skipped` names every one. The command shows one line for each:
 
 ```text
 Synced 3 devices.
@@ -102,7 +103,7 @@ Skipped 1 device:
 ### Limits
 
 - The device id is the Nautobot UUID.
-- hco-core does not read Nautobot Secrets Groups.
+- hco-core does not read Nautobot Secrets Groups. See [Secrets](secrets.md).
 - The selector applies after the query, so a page can hold fewer devices than the limit.
 - Only a cable between two interfaces becomes a topology edge. hco-core does not read circuits.
 - The Golden Config answer must hold one row for the device, or no row. Another answer is an error.
@@ -119,7 +120,8 @@ A 401, a 403, another status that is not 2xx, or no answer stops the request. A 
 | `ENOENT` | Nautobot answered 404. From the Golden Config route, the Golden Config app does not answer. |
 | `ETIMEDOUT` | Nautobot did not answer in time. |
 | `ECONNREFUSED` | Nautobot refused the connection. |
-| `EIO` or `EPROTO` | Nautobot answered with another status. |
+| `EPROTO` | Nautobot answered with a status that is not 2xx, 401, 403, or 404. |
+| `EIO` | The request failed for another reason, and Nautobot gave no answer. |
 
 The `detail` field of the log line gives a sentence, such as `refused the token with HTTP 401; check HCO_NAUTOBOT_TOKEN`.
 
