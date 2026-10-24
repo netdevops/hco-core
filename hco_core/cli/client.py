@@ -22,6 +22,7 @@ TIMEOUT_SECONDS: Final = 30.0
 API_SCHEMES: Final = frozenset({"http", "https"})
 INVALID_URL: Final = "HCO_API_URL is not an http or https URL with a host"
 MAX_DETAIL: Final = 500
+INSTALL_GUIDE_URL: Final = "https://netdevops.github.io/hco-core/admin/install/"
 _LINE_BREAKS: Final = re.compile(r"[^\S ]+")
 """White space other than a space, such as a tab or a new line."""
 
@@ -113,8 +114,8 @@ class ApiClient:
             )
         return (
             f"cannot reach the API at {self.url} ({reason}); "
-            "check HCO_API_URL and that the API is running; the README section "
-            '"The REST API" shows how to start it'
+            "check HCO_API_URL and that the API is running; "
+            f"{INSTALL_GUIDE_URL} shows how to start it"
         )
 
     def _error(self, response: httpx.Response) -> ApiError:

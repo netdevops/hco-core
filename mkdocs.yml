@@ -1,0 +1,51 @@
+site_name: hco-core
+site_url: https://netdevops.github.io/hco-core/
+site_description: Ports, domain models, and a review service for network configuration orchestration on hier_config
+repo_url: https://github.com/netdevops/hco-core
+repo_name: netdevops/hco-core
+edit_uri: edit/develop/docs/
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.indexes
+    - content.code.copy
+
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.superfences
+
+validation:
+  links:
+    not_found: warn
+    anchors: warn
+
+nav:
+  - Home: index.md
+  - Admin:
+      - admin/index.md
+      - Install: admin/install.md
+      - Configuration: admin/configuration.md
+      - Database: admin/database.md
+      - Source of truth: admin/source-of-truth.md
+      - Secrets: admin/secrets.md
+      - Device connections: admin/connections.md
+      - Security: admin/security.md
+  - User:
+      - user/index.md
+      - Concepts: user/concepts.md
+      - The command line: user/cli.md
+      - The REST API: user/api.md
+  - Developer:
+      - developer/index.md
+      - Development setup: developer/setup.md
+      - Ports and design: developer/ports.md
+      - Engine: developer/engine.md
+      - Adapters: developer/adapters.md
+      - Services: developer/services.md
+      - Review graph: developer/review-graph.md
