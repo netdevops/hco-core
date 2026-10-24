@@ -22,9 +22,7 @@ TIMEOUT_SECONDS: Final = 30.0
 API_SCHEMES: Final = frozenset({"http", "https"})
 INVALID_URL: Final = "HCO_API_URL is not an http or https URL with a host"
 MAX_DETAIL: Final = 500
-INSTALL_GUIDE_URL: Final = (
-    "https://github.com/netdevops/hco-core/blob/develop/docs/admin/install.md"
-)
+INSTALL_GUIDE_URL: Final = "https://netdevops.github.io/hco-core/admin/install/"
 _LINE_BREAKS: Final = re.compile(r"[^\S ]+")
 """White space other than a space, such as a tab or a new line."""
 

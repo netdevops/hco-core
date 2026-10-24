@@ -1,4 +1,5 @@
 site_name: hco-core
+site_url: https://netdevops.github.io/hco-core/
 site_description: Ports, domain models, and a review service for network configuration orchestration on hier_config
 repo_url: https://github.com/netdevops/hco-core
 repo_name: netdevops/hco-core

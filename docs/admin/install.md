@@ -43,7 +43,7 @@ Do these steps in this order:
 5. Read the inventory into the database:
 
     ```bash
-    hco-core device sync --as <your name>
+    hco-core device sync --as <name>
     ```
 
 You can also start the API with uvicorn. This example uses the YAML inventory and the mock connection:
