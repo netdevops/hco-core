@@ -47,7 +47,7 @@ def database_url() -> str:
         safe_url = make_url(url).render_as_string(hide_password=True)
         pytest.fail(
             f"Postgres at {safe_url} is unreachable. Start it and set "
-            "HCO_DATABASE_URL, as README.md 'Development' shows.",
+            "HCO_DATABASE_URL, as docs/developer/setup.md shows.",
             pytrace=False,
         )
     finally:
