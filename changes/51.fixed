@@ -1,2 +1,1 @@
 Fixed `hco-core run create` with Nautobot, where the read of the intended config stopped with HTTP 400.
-Fixed the supported range in the documentation: Nautobot 2.1 to 3.x with the Golden Config app 2.x to 3.x.
