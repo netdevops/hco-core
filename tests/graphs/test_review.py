@@ -28,6 +28,7 @@ from hco_core.domain.device import DeviceRecord
 from hco_core.domain.ids import DeviceID
 from hco_core.domain.notify import DeliveryHandle, Notification
 from hco_core.engine.errors import DriverMismatchError
+from hco_core.engine.fingerprints import driver_fingerprint
 from hco_core.graphs import review
 from hco_core.graphs.review import (
     ApprovalDeps,
@@ -190,6 +191,19 @@ def test_a_converged_change_passes_the_gate(
     assert (state, error) == ("REMEDIATING", None)
     assert fingerprint == done.values["change_fingerprint"]
     assert transitions(world) == ["DRAFT", "COLLECTING", "REMEDIATING"]
+
+
+def test_the_run_stores_and_carries_the_driver_fingerprint(
+    runner: asyncio.Runner, world: World
+) -> None:
+    """The run row and the state hold the fingerprint of the device driver."""
+    graph = start(runner, world)
+
+    (row,) = scalar_rows(
+        world.engine, "SELECT driver_fingerprint FROM hco.remediation_run"
+    )
+    assert row == (driver_fingerprint("CISCO_IOS"),)
+    assert snapshot(runner, graph).values["driver_fingerprint"] == row[0]
 
 
 def test_the_snapshots_hold_the_three_configs(

@@ -206,6 +206,7 @@ class RemediationRun(Base):
         Index(None, "tenant_id", "state"),
         Index(None, "change_set_id"),
         Index(None, "change_fingerprint"),
+        Index(None, "device_id", "id"),
         one_of("state", "state", RUN_STATES),
         one_of("plan_source", "plan_source", ("deterministic", "ai", "manual")),
         one_of("risk_tier_floor", "risk_tier_floor", RISK_TIERS),
@@ -228,6 +229,8 @@ class RemediationRun(Base):
     rollback_dump: Mapped[JSONObject | None] = mapped_column(JSONB)
     future_report: Mapped[JSONObject | None] = mapped_column(JSONB)
     change_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    driver_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    """The sha256 of the driver rules that built the remediation."""
     plan_source: Mapped[str] = mapped_column(String(16), server_default="deterministic")
     risk_tier_floor: Mapped[str | None] = mapped_column(String(16))
     risk_tier_final: Mapped[str | None] = mapped_column(String(16))
