@@ -404,5 +404,5 @@ def test_previous_driver_fingerprint_is_none_with_no_earlier_run(
 
 def test_the_gate_states_are_every_state_from_awaiting_approval_on() -> None:
     """The gate states and the ungated states cover `RunState` with no overlap."""
-    assert GATE_STATES == set(RunState) - UNGATED_STATES
+    assert set(RunState) - UNGATED_STATES == GATE_STATES
     assert len(GATE_STATES) == GATE_STATE_COUNT

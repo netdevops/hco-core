@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import re
-import subprocess
+import subprocess  # ruff: ignore[suspicious-subprocess-import]
 import sys
 
 import pytest
@@ -122,7 +122,7 @@ def test_driver_fingerprint_rejects_an_unknown_platform() -> None:
 def test_driver_fingerprint_does_not_depend_on_set_iteration_order() -> None:
     """A `frozenset` rule gives one digest under every hash seed."""
     fingerprints = {
-        subprocess.run(
+        subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
             [sys.executable, "-c", SET_RULE_DRIVER],
             env={**os.environ, "PYTHONHASHSEED": seed},
             capture_output=True,
