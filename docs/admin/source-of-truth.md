@@ -50,7 +50,7 @@ An error names the device id and the key. It never shows a `config_context` or `
 
 Nautobot gives the devices, the intended configs, and the topology. hco-core never writes to Nautobot.
 
-hco-core targets Nautobot 2.1 to 2.4 with the Golden Config app 2.x. The tests use recorded answers, not a live Nautobot. Do a test against your own Nautobot before you trust the adapter.
+hco-core targets Nautobot 2.1 to 3.x with the Golden Config app 2.x to 3.x. The tests use recorded answers, not a live Nautobot. Do a test against your own Nautobot before you trust the adapter.
 
 Set these variables. Use a read-only API token.
 
@@ -71,7 +71,7 @@ export HCO_NAUTOBOT_TOKEN=<a read-only Nautobot API token>
 ### What hco-core reads
 
 - Devices, with one GraphQL query (`POST /api/graphql/`) for each page of 500 devices or fewer. The query reads the name, the platform, the role, the location, the tags, the primary IPv4 address, and the cable peer of each interface.
-- The intended config, from `GET /api/plugins/golden-config/golden-config/?device_id=<id>`.
+- The intended config, from `GET /api/plugins/golden-config/golden-config/?device=<id>`.
 - The config context of a device, with a GraphQL query.
 - `GET /api/status/`, for the health check.
 

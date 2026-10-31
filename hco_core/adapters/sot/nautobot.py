@@ -1,6 +1,6 @@
 """A source of truth in Nautobot, read over GraphQL and REST.
 
-The query shapes target Nautobot 2.1 to 2.4 and the Golden Config app 2.x.
+The query shapes target Nautobot 2.1 to 3.x and the Golden Config app 2.x to 3.x.
 The adapter only reads: each request is a GET, or a POST of a GraphQL query.
 """
 
@@ -315,7 +315,7 @@ class NautobotSourceOfTruth:
         """
         _check_id(device_id)
         body = await self._request(
-            "GET", GOLDEN_CONFIG_PATH, params={"device_id": device_id}
+            "GET", GOLDEN_CONFIG_PATH, params={"device": device_id}
         )
         rows = (await asyncio.to_thread(_parse, body, _GoldenConfigs)).results
         others = sum(
@@ -434,7 +434,7 @@ class NautobotSourceOfTruth:
         if answer.errors or answer.data is None or answer.data.devices is None:
             message = (
                 f"Nautobot refused the query with {len(answer.errors or ())} errors; "
-                "hco-core needs Nautobot 2.x"
+                "hco-core needs Nautobot 2.1 to 3.x"
             )
             raise InvalidInventoryError(message)
         return answer.data.devices
