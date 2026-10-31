@@ -1,2 +1,2 @@
-Added a documentation site at https://netdevops.github.io/hco-core/, with separate guides for admins, users, and developers.
+Added a documentation site in `docs/`, with separate guides for admins, users, and developers.
 Moved the reference content of the README to the documentation site.
