@@ -12,4 +12,5 @@ htmlcov/
 .env
 creds.env
 site/
+.sdlc-crew-run/
 !development/.env
