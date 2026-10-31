@@ -6,7 +6,7 @@ Every state transition writes one `audit_event` in the same transaction.
 import hashlib
 from collections.abc import Collection
 from dataclasses import dataclass, replace
-from typing import Literal
+from typing import Final, Literal
 
 from pydantic import TypeAdapter
 from sqlalchemy import select
@@ -24,6 +24,23 @@ type SnapshotKind = Literal["running", "intended", "future", "post_change"]
 type SnapshotSource = Literal["device", "git", "sot", "upload"]
 
 _DUMP: TypeAdapter[DumpJson] = TypeAdapter(DumpJson)
+
+GATE_STATES: Final = frozenset(
+    {
+        RunState.AWAITING_APPROVAL,
+        RunState.REJECTED,
+        RunState.EXPIRED,
+        RunState.APPROVED,
+        RunState.SCHEDULED,
+        RunState.APPLYING,
+        RunState.VERIFYING,
+        RunState.COMMITTED,
+        RunState.ROLLING_BACK,
+        RunState.ROLLED_BACK,
+        RunState.ROLLBACK_FAILED,
+    }
+)
+"""The states of a run that a person saw at the approval gate."""
 
 
 class RunNotFoundError(LookupError):
@@ -57,6 +74,7 @@ class RunUpdate:
     rollback_dump: DumpJson | None = None
     future_report: models.JSONObject | None = None
     change_fingerprint: str | None = None
+    driver_fingerprint: str | None = None
     risk_tier_floor: RiskTier | None = None
     risk_tier_final: RiskTier | None = None
     error: models.JSONObject | None = None
@@ -195,6 +213,27 @@ class RunRepository:
             message = f"no remediation run in change set {change_set_id!r}"
             raise RunNotFoundError(message)
         return run_id
+
+    async def previous_driver_fingerprint(
+        self, device_id: str, before_run_id: str
+    ) -> str | None:
+        """Return the fingerprint of the last earlier gate run of the device, or None.
+
+        A gate run has a state in `GATE_STATES`. A run with no stored fingerprint
+        does not count.
+        """
+        async with self._sessions() as session:
+            return await session.scalar(
+                select(models.RemediationRun.driver_fingerprint)
+                .where(
+                    models.RemediationRun.device_id == device_id,
+                    models.RemediationRun.id < before_run_id,
+                    models.RemediationRun.state.in_(GATE_STATES),
+                    models.RemediationRun.driver_fingerprint.is_not(None),
+                )
+                .order_by(models.RemediationRun.id.desc())
+                .limit(1)
+            )
 
     async def update_run(
         self,
@@ -349,6 +388,7 @@ def _apply(run: models.RemediationRun, update: RunUpdate) -> None:
         "rollback_dump": _json(update.rollback_dump),
         "future_report": update.future_report,
         "change_fingerprint": update.change_fingerprint,
+        "driver_fingerprint": update.driver_fingerprint,
         "risk_tier_floor": _tier_name(update.risk_tier_floor),
         "risk_tier_final": _tier_name(update.risk_tier_final),
         "error": update.error,

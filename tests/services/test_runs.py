@@ -14,6 +14,7 @@ from hco_core.domain.remediation import DumpJson
 from hco_core.domain.risk import RiskTier
 from hco_core.services.audit import Actor
 from hco_core.services.runs import (
+    GATE_STATES,
     RunNotFoundError,
     RunRepository,
     RunStateError,
@@ -28,6 +29,18 @@ GRAPH_COLUMNS = ("system", "api", None)
 REQUESTER_COLUMNS = ("user", "cli", "req-1")
 DUMP: DumpJson = {"lines": []}
 BODY = "hostname r1\n"
+OTHER_DEVICE_ID = "01JDEVICE0000000000000000B"
+OLD_FINGERPRINT = "a" * 64
+NEW_FINGERPRINT = "b" * 64
+GATE_STATE_COUNT = 11
+UNGATED_STATES = {
+    RunState.DRAFT,
+    RunState.COLLECTING,
+    RunState.REMEDIATING,
+    RunState.ASSESSING,
+    RunState.EVALUATING_POLICY,
+    RunState.BLOCKED,
+}
 
 
 @pytest.fixture
@@ -294,3 +307,102 @@ def test_the_run_of_a_change_set_is_the_newest_and_none_is_named(
     newest = runner.run(runs.create_run(change_set_id, device_id, "thread-2", actor))
 
     assert runner.run(runs.run_of_change_set(change_set_id)) == newest
+
+
+def add_run(
+    runner: asyncio.Runner,
+    runs: RunRepository,
+    device_id: str,
+    state: RunState,
+    fingerprint: str | None = None,
+) -> str:
+    """Create one run of the device in the state, and return its id."""
+    change_set_id = runner.run(runs.create_change_set("change", REQUESTER_ACTOR))
+    run_id = runner.run(runs.create_run(change_set_id, device_id, "thread-1", GRAPH))
+    update = RunUpdate(state=state, driver_fingerprint=fingerprint)
+    runner.run(runs.update_run(run_id, update, GRAPH))
+    return run_id
+
+
+def test_record_remediation_stores_the_driver_fingerprint(
+    runner: asyncio.Runner, runs: RunRepository, engine: Engine, device_id: str
+) -> None:
+    """The fingerprint of the update reaches the run row."""
+    run_id = add_run(runner, runs, device_id, RunState.COLLECTING)
+    future = Snapshot(device_id=device_id, kind="future", body=BODY, dump=DUMP)
+
+    runner.run(
+        runs.record_remediation(
+            run_id, future, RunUpdate(driver_fingerprint=NEW_FINGERPRINT), GRAPH
+        )
+    )
+
+    with engine.connect() as connection:
+        stored = connection.scalar(
+            text("SELECT driver_fingerprint FROM hco.remediation_run")
+        )
+    assert stored == NEW_FINGERPRINT
+
+
+def test_previous_driver_fingerprint_reads_the_newest_gate_run(
+    runner: asyncio.Runner, runs: RunRepository, device_id: str
+) -> None:
+    """The newest earlier run at the gate wins over an older run in a later state."""
+    add_run(runner, runs, device_id, RunState.APPROVED, OLD_FINGERPRINT)
+    add_run(runner, runs, device_id, RunState.AWAITING_APPROVAL, NEW_FINGERPRINT)
+    current = add_run(runner, runs, device_id, RunState.REMEDIATING)
+
+    previous = runner.run(runs.previous_driver_fingerprint(device_id, current))
+
+    assert previous == NEW_FINGERPRINT
+
+
+@pytest.mark.parametrize("state", sorted(GATE_STATES))
+def test_previous_driver_fingerprint_counts_every_gate_state(
+    runner: asyncio.Runner, runs: RunRepository, device_id: str, state: RunState
+) -> None:
+    """Each state from `AWAITING_APPROVAL` on is a baseline."""
+    add_run(runner, runs, device_id, state, OLD_FINGERPRINT)
+    current = add_run(runner, runs, device_id, RunState.REMEDIATING)
+
+    previous = runner.run(runs.previous_driver_fingerprint(device_id, current))
+
+    assert previous == OLD_FINGERPRINT
+
+
+def test_previous_driver_fingerprint_skips_other_devices_later_runs_and_ungated_states(
+    runner: asyncio.Runner, runs: RunRepository, engine: Engine, device_id: str
+) -> None:
+    """Only an earlier gate run of this device with a stored fingerprint counts."""
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO hco.device (id, sot_name, sot_device_id, name, "
+                "platform_name, mgmt_address) VALUES (:id, 'yaml', 'r2', 'r2', "
+                "'CISCO_IOS', '192.0.2.2')"
+            ),
+            {"id": OTHER_DEVICE_ID},
+        )
+    add_run(runner, runs, OTHER_DEVICE_ID, RunState.APPROVED, OLD_FINGERPRINT)
+    add_run(runner, runs, device_id, RunState.AWAITING_APPROVAL)
+    for state in UNGATED_STATES:
+        add_run(runner, runs, device_id, state, OLD_FINGERPRINT)
+    current = add_run(runner, runs, device_id, RunState.REMEDIATING)
+    add_run(runner, runs, device_id, RunState.APPROVED, OLD_FINGERPRINT)
+
+    assert runner.run(runs.previous_driver_fingerprint(device_id, current)) is None
+
+
+def test_previous_driver_fingerprint_is_none_with_no_earlier_run(
+    runner: asyncio.Runner, runs: RunRepository, device_id: str
+) -> None:
+    """The first run of a device has no baseline."""
+    current = add_run(runner, runs, device_id, RunState.REMEDIATING)
+
+    assert runner.run(runs.previous_driver_fingerprint(device_id, current)) is None
+
+
+def test_the_gate_states_are_every_state_from_awaiting_approval_on() -> None:
+    """The gate states and the ungated states cover `RunState` with no overlap."""
+    assert set(RunState) - UNGATED_STATES == GATE_STATES
+    assert len(GATE_STATES) == GATE_STATE_COUNT

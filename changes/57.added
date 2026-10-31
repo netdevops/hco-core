@@ -1,0 +1,2 @@
+Each run stores a fingerprint of its driver rules, and the run repository returns the fingerprint of the last run of a device that reached the approval gate.
+Added database migration `0002`, which adds the `driver_fingerprint` column. Run `hco-core db upgrade` before you start this release.

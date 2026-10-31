@@ -228,6 +228,8 @@ class RemediationRun(Base):
     rollback_dump: Mapped[JSONObject | None] = mapped_column(JSONB)
     future_report: Mapped[JSONObject | None] = mapped_column(JSONB)
     change_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    driver_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    """The sha256 of the driver rules that built the remediation."""
     plan_source: Mapped[str] = mapped_column(String(16), server_default="deterministic")
     risk_tier_floor: Mapped[str | None] = mapped_column(String(16))
     risk_tier_final: Mapped[str | None] = mapped_column(String(16))

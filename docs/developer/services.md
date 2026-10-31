@@ -37,6 +37,11 @@ The requester check compares the NFKC, casefolded names. The database trigger al
 
 `RunRepository` creates and updates change sets, runs, and config snapshots. Each state change writes one `audit_event` row.
 
+`previous_driver_fingerprint()` returns the driver fingerprint of the newest earlier run of a device that reached the approval gate, or `None`.
+
+- `GATE_STATES` holds the gate states: `AWAITING_APPROVAL` and each later state. `BLOCKED` is not a gate state.
+- A run with no stored fingerprint does not count.
+
 ## NotificationLedger
 
 `NotificationLedger.deliver()` sends a message one time for each run, channel, and purpose.
