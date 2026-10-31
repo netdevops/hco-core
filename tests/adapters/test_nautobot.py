@@ -1,4 +1,4 @@
-"""The Nautobot source of truth reads Nautobot 2.x over GraphQL and REST, only."""
+"""The Nautobot source of truth reads Nautobot 2.1 to 3.x over GraphQL and REST, only."""
 
 import asyncio
 import copy
@@ -81,7 +81,9 @@ class FakeNautobot:
         if path == "/api/status/":
             return httpx.Response(200, json={"nautobot-version": "2.4.0"})
         if path == "/api/plugins/golden-config/golden-config/":
-            wanted = request.url.params["device_id"]
+            if "device_id" in request.url.params:
+                return httpx.Response(400, json={"device_id": ["Unknown filter field"]})
+            wanted = request.url.params["device"]
             answer = json.loads(fixture("golden_config.json"))
             answer["results"] = [
                 row for row in answer["results"] if row["device"]["id"] == wanted
@@ -249,7 +251,7 @@ def test_intended_config_comes_from_golden_config() -> None:
     assert intended.source == "sot"
     request = fake.requests[-1]
     assert request.method == "GET"
-    assert request.url.params["device_id"] == EDGE_1
+    assert dict(request.url.params) == {"device": EDGE_1}
     assert asyncio.run(sot.intended_config(EDGE_2)) is None
 
 
@@ -392,6 +394,19 @@ def test_a_golden_config_404_names_the_app() -> None:
         asyncio.run(adapter(no_app).intended_config(EDGE_1))
 
 
+def test_a_golden_config_400_for_an_unknown_device_is_unreachable() -> None:
+    """A 400 on the Golden Config route stops with the status and EPROTO."""
+
+    def unknown_device(request: httpx.Request) -> httpx.Response:
+        if request.url.path == nautobot.GOLDEN_CONFIG_PATH:
+            return httpx.Response(400, json={"device": ["Unknown device"]})
+        return FakeNautobot()(request)
+
+    with pytest.raises(SourceOfTruthUnreachableError, match="HTTP 400") as error:
+        asyncio.run(adapter(unknown_device).intended_config(EDGE_1))
+    assert error.value.errno == errno.EPROTO
+
+
 def test_a_transport_error_hides_the_request() -> None:
     """The error names the error type, never the request or its headers."""
 
@@ -415,7 +430,7 @@ def test_a_transport_error_hides_the_request() -> None:
         (b'{"data": {"devices": [{"id": 7}]}}', "expected shape"),
         (b"[" * 100_000 + b"]" * 100_000, "nested"),
         (DEEP_MAPPINGS, "expected shape"),
-        (fixture("graphql_errors.json"), "refused the query"),
+        (fixture("graphql_errors.json"), r"refused the query.*2\.1 to 3\.x"),
     ],
     ids=["malformed", "latin", "list", "id", "deep", "deep-mappings", "errors"],
 )
