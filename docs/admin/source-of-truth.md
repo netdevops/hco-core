@@ -50,7 +50,7 @@ An error names the device id and the key. It never shows a `config_context` or `
 
 Nautobot gives the devices, the intended configs, and the topology. hco-core never writes to Nautobot.
 
-hco-core targets Nautobot 2.1 to 3.x with the Golden Config app 2.x to 3.x. The tests use recorded answers, not a live Nautobot. Do a test against your own Nautobot before you trust the adapter.
+hco-core targets two pairs: Nautobot 2.1 to 2.x with Golden Config 2.x, and Nautobot 3.x with Golden Config 3.x. The tests use recorded answers, not a live Nautobot. Do a test against your own Nautobot before you trust the adapter.
 
 Set these variables. Use a read-only API token.
 

@@ -1,6 +1,7 @@
 """A source of truth in Nautobot, read over GraphQL and REST.
 
-The query shapes target Nautobot 2.1 to 3.x and the Golden Config app 2.x to 3.x.
+The query shapes target two pairs: Nautobot 2.1 to 2.x with Golden Config 2.x,
+and Nautobot 3.x with Golden Config 3.x.
 The adapter only reads: each request is a GET, or a POST of a GraphQL query.
 """
 

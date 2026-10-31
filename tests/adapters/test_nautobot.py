@@ -394,6 +394,19 @@ def test_a_golden_config_404_names_the_app() -> None:
         asyncio.run(adapter(no_app).intended_config(EDGE_1))
 
 
+def test_a_golden_config_400_for_an_unknown_device_is_unreachable() -> None:
+    """A 400 on the Golden Config route stops with the status and EPROTO."""
+
+    def unknown_device(request: httpx.Request) -> httpx.Response:
+        if request.url.path == nautobot.GOLDEN_CONFIG_PATH:
+            return httpx.Response(400, json={"device": ["Unknown device"]})
+        return FakeNautobot()(request)
+
+    with pytest.raises(SourceOfTruthUnreachableError, match="HTTP 400") as error:
+        asyncio.run(adapter(unknown_device).intended_config(EDGE_1))
+    assert error.value.errno == errno.EPROTO
+
+
 def test_a_transport_error_hides_the_request() -> None:
     """The error names the error type, never the request or its headers."""
 
@@ -417,7 +430,7 @@ def test_a_transport_error_hides_the_request() -> None:
         (b'{"data": {"devices": [{"id": 7}]}}', "expected shape"),
         (b"[" * 100_000 + b"]" * 100_000, "nested"),
         (DEEP_MAPPINGS, "expected shape"),
-        (fixture("graphql_errors.json"), "refused the query.*2.1 to 3.x"),
+        (fixture("graphql_errors.json"), r"refused the query.*2\.1 to 3\.x"),
     ],
     ids=["malformed", "latin", "list", "id", "deep", "deep-mappings", "errors"],
 )
