@@ -53,8 +53,6 @@ poetry run mkdocs serve
 
 The gate builds the site with `--strict`, so a broken link fails the build.
 
-The `docs` workflow publishes the site to https://netdevops.github.io/hco-core/ after each push to `develop`.
-
 Write the documentation in ASD-STE100 Simplified Technical English.
 
 ## Changelog fragments
