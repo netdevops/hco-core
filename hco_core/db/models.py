@@ -206,6 +206,7 @@ class RemediationRun(Base):
         Index(None, "tenant_id", "state"),
         Index(None, "change_set_id"),
         Index(None, "change_fingerprint"),
+        Index(None, "device_id", "id"),
         one_of("state", "state", RUN_STATES),
         one_of("plan_source", "plan_source", ("deterministic", "ai", "manual")),
         one_of("risk_tier_floor", "risk_tier_floor", RISK_TIERS),

@@ -393,6 +393,21 @@ def test_previous_driver_fingerprint_skips_other_devices_later_runs_and_ungated_
     assert runner.run(runs.previous_driver_fingerprint(device_id, current)) is None
 
 
+def test_previous_driver_fingerprint_skips_a_newer_run_with_no_fingerprint(
+    runner: asyncio.Runner, runs: RunRepository, device_id: str
+) -> None:
+    """A newer gate run with no fingerprint and the current run do not count."""
+    add_run(runner, runs, device_id, RunState.APPROVED, OLD_FINGERPRINT)
+    add_run(runner, runs, device_id, RunState.COMMITTED)
+    current = add_run(
+        runner, runs, device_id, RunState.AWAITING_APPROVAL, NEW_FINGERPRINT
+    )
+
+    previous = runner.run(runs.previous_driver_fingerprint(device_id, current))
+
+    assert previous == OLD_FINGERPRINT
+
+
 def test_previous_driver_fingerprint_is_none_with_no_earlier_run(
     runner: asyncio.Runner, runs: RunRepository, device_id: str
 ) -> None:
