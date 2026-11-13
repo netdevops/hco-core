@@ -13,6 +13,18 @@ from pydantic import SecretStr
 
 pytest.importorskip("scrapli")
 
+from scrapli.driver.core.arista_eos.base_driver import (
+    FAILED_WHEN_CONTAINS as EOS_FAILED_WHEN_CONTAINS,
+)
+from scrapli.driver.core.cisco_iosxe.base_driver import (
+    FAILED_WHEN_CONTAINS as IOSXE_FAILED_WHEN_CONTAINS,
+)
+from scrapli.driver.core.cisco_iosxr.base_driver import (
+    FAILED_WHEN_CONTAINS as IOSXR_FAILED_WHEN_CONTAINS,
+)
+from scrapli.driver.core.cisco_nxos.base_driver import (
+    FAILED_WHEN_CONTAINS as NXOS_FAILED_WHEN_CONTAINS,
+)
 from scrapli.exceptions import (
     ScrapliAuthenticationFailed,
     ScrapliConnectionNotOpened,
@@ -53,6 +65,13 @@ CREDENTIALS = DeviceCredentials(
     username=USERNAME, password=SecretStr(PASSWORD), enable=SecretStr(ENABLE)
 )
 INVALID_INPUT = "% Invalid input detected at '^' marker."
+FAILED_WHEN_CONTAINS: dict[str, list[str]] = {
+    "cisco_iosxe": IOSXE_FAILED_WHEN_CONTAINS,
+    "cisco_nxos": NXOS_FAILED_WHEN_CONTAINS,
+    "cisco_iosxr": IOSXR_FAILED_WHEN_CONTAINS,
+    "arista_eos": EOS_FAILED_WHEN_CONTAINS,
+}
+"""The failure strings of each scrapli core platform."""
 RUNNING = (TRANSCRIPTS / "running.txt").read_text(encoding="utf8")
 LAST_CHANGE = "! Last configuration change at 10:00:00 UTC Fri Oct 16 2026 by admin"
 VERSION = "Cisco IOS Software, Catalyst L3 Switch Software\n"
@@ -161,7 +180,11 @@ class FakeTransport:
 
     def __call__(self, **kwargs: object) -> FakeConnection:
         """Make a connection with the arguments."""
-        connection = FakeConnection(self, kwargs)
+        connection = FakeConnection(
+            self,
+            kwargs,
+            failed_when_contains=list(FAILED_WHEN_CONTAINS[str(kwargs["platform"])]),
+        )
         self.connections.append(connection)
         return connection
 
@@ -494,7 +517,13 @@ def test_a_failure_string_inside_the_answer_does_not_fail_the_read(
     transport: FakeTransport,
 ) -> None:
     """Device text in a description or a banner never decides if a read works."""
-    body = f"interface Gi1\n description {INVALID_INPUT}\n"
+    body = (
+        "interface Gi1\n"
+        f" description {INVALID_INPUT}\n"
+        "banner motd ^C\n"
+        f"{INVALID_INPUT}\n"
+        "^C\n"
+    )
     transport.outputs["show running-config"] = body
     transport.outputs["show version"] = f"Version 1\n{INVALID_INPUT}\n"
 
@@ -512,17 +541,59 @@ def test_a_failure_string_inside_the_answer_does_not_fail_the_read(
     )
 
 
-@pytest.mark.parametrize("answer", [INVALID_INPUT, f"\n  {INVALID_INPUT}\nmore\n"])
-def test_an_error_as_the_first_line_of_the_answer_is_a_refused_command(
-    transport: FakeTransport, answer: str
+@pytest.mark.parametrize(
+    ("platform_name", "answer"),
+    [
+        (IOS, INVALID_INPUT),
+        (IOS, f"\n  {INVALID_INPUT}\nmore\n"),
+        (IOS, f"        ^\n{INVALID_INPUT}"),
+        (IOS, f"  ^\n\n{INVALID_INPUT}\n"),
+        ("CISCO_NXOS", "     ^\n% Invalid command at '^' marker."),
+        (IOS, "% Incomplete command."),
+    ],
+)
+def test_an_error_on_the_first_line_after_the_caret_lines_is_a_refused_command(
+    transport: FakeTransport, platform_name: str, answer: str
 ) -> None:
-    """The failure strings of the scrapli platform match the first line only."""
+    """The failure strings of the scrapli platform match the first line with text after the caret lines."""
     transport.outputs["show version"] = answer
 
     with pytest.raises(DeviceUnreachableError, match="refused 'show version'") as error:
-        in_session(device(), lambda session: session.collect_state(["show version"]))
+        in_session(
+            device(platform_name),
+            lambda session: session.collect_state(["show version"]),
+        )
 
     assert "marker" not in str(error.value)
+
+
+def test_a_caret_line_before_an_error_on_the_fingerprint_command_is_a_refused_command(
+    transport: FakeTransport,
+) -> None:
+    """A caret line before the error does not hide a refused fingerprint command."""
+    command = PLATFORMS["CISCO_XR"].fingerprint_command
+    transport.outputs[command] = f"                ^\n{INVALID_INPUT}"
+
+    with pytest.raises(DeviceUnreachableError, match="refused") as error:
+        in_session(device("CISCO_XR"), lambda session: session.config_fingerprint())
+
+    assert "marker" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "answer", ["  ^\nhostname r1\n", f"^C\n{INVALID_INPUT}\n", "  ^\n"]
+)
+def test_a_caret_line_without_an_error_after_it_is_a_valid_answer(
+    transport: FakeTransport, answer: str
+) -> None:
+    """Only a failure string on the first line with text after the caret lines refuses a read."""
+    transport.outputs["show version"] = answer
+
+    state = in_session(
+        device(), lambda session: session.collect_state(["show version"])
+    )
+
+    assert state["show version"] == answer
 
 
 def test_the_traceback_locals_hold_no_scrapli_error(transport: FakeTransport) -> None:

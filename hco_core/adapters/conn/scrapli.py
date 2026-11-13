@@ -220,8 +220,8 @@ class ScrapliSession:
         """Send one command in a worker thread and return its output.
 
         One command runs at a time on the connection. A failure string of the
-        scrapli platform counts only on the first line of the answer, so device
-        text further down never decides if a read works.
+        scrapli platform counts only on the first line with text after any
+        caret lines. Device text further down never decides if a read works.
 
         Raises:
             DeviceUnreachableError: On a transport error, a refused command, or
@@ -249,8 +249,11 @@ class ScrapliSession:
         raise DeviceUnreachableError(message)
 
     def _refused(self, answer: str) -> bool:
-        """Return True if the first line with text is a CLI error of the platform."""
-        first_line = next((line for line in answer.splitlines() if line.strip()), "")
+        """Return True if the first line with text after the caret lines is a CLI error of the platform."""
+        first_line = next(
+            (line for line in answer.splitlines() if line.strip() not in {"", "^"}),
+            "",
+        )
         return any(text in first_line for text in self._connection.failed_when_contains)
 
 
