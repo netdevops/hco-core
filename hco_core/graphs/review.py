@@ -40,7 +40,7 @@ from hco_core.domain.notify import Notification
 from hco_core.domain.remediation import ConfigDerived, DumpJson, RemediationBundle
 from hco_core.domain.risk import RiskTier
 from hco_core.domain.secrets import SecretPurpose
-from hco_core.engine.fingerprints import change_fingerprint
+from hco_core.engine.fingerprints import change_fingerprint, driver_fingerprint
 from hco_core.engine.remediation import build_bundle, parse, render_lines
 from hco_core.engine.views import config_derived
 from hco_core.policy.tiers import APPROVALS_BY_TIER
@@ -139,6 +139,8 @@ class ReviewState(TypedDict, total=False):
     future_dump: DumpJson
     future_report: dict[str, JsonValue]
     change_fingerprint: str
+    driver_fingerprint: str
+    """The sha256 of the driver rules of this run, from `build_remediation`."""
     evidence: Annotated[dict[str, Any], merge_dicts]
     risk_tier_floor: Annotated[str, higher_tier]
     risk: dict[str, JsonValue]
@@ -300,6 +302,7 @@ class _Remediated:
     bundle: RemediationBundle
     derived: ConfigDerived
     fingerprint: str
+    driver_fingerprint: str
     future_text: str
 
 
@@ -324,6 +327,7 @@ def _remediate(
         bundle,
         config_derived(bundle, running_dump, device),
         change_fingerprint(bundle.remediation_dump),
+        driver_fingerprint(platform_name),
         future_text,
     )
 
@@ -360,6 +364,7 @@ async def build_remediation(state: ReviewState, deps: ReviewDeps) -> ReviewState
                 rollback_dump=bundle.rollback_dump,
                 future_report=future_report,
                 change_fingerprint=result.fingerprint,
+                driver_fingerprint=result.driver_fingerprint,
             ),
             deps.actor,
         )
@@ -371,6 +376,7 @@ async def build_remediation(state: ReviewState, deps: ReviewDeps) -> ReviewState
         "future_dump": bundle.future_dump,
         "future_report": future_report,
         "change_fingerprint": result.fingerprint,
+        "driver_fingerprint": result.driver_fingerprint,
         "plan_source": "deterministic",
         "evidence": {"config_derived": result.derived.model_dump(mode="json")},
         "run_state": RunState.REMEDIATING.value,
