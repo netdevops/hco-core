@@ -1,0 +1,1 @@
+Fixed the scrapli connection, where a refused command on IOS, NX-OS, or IOS-XR gave the CLI error text as a valid answer.

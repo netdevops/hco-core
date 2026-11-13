@@ -62,5 +62,5 @@ Each allowlist command is a `show` command in printable ASCII. After a pipe, onl
 - A connection error stops the read. The log line `device_unreachable` gives the device, the error type, and the error text.
 - A refused command, or an answer over the size limit, also stops the read. Its reason is only in the run error.
 - hco-core makes the error text printable and cuts it at 200 characters. It removes the user name, the password, and the enable secret from the text. The text can hold the device prompt. It never holds a command answer.
-- A CLI error of the platform, such as `% Invalid input detected`, counts only on the first line of an answer. The same text in a description or a banner does not stop a read.
+- A CLI error of the platform, such as `% Invalid input detected`, counts only on the first line with text, after any lines that hold only `^`. The same text in a description or a banner does not stop a read.
 - hco-core refuses an answer larger than 16,777,216 characters, and it never keeps that answer. The session timeout limits the time of each read.
